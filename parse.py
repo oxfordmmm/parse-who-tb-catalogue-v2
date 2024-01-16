@@ -1,5 +1,6 @@
 """Parse the WHO catalogue into GARC for use within `gnomonicus`
 """
+import argparse
 import pickle
 import pandas as pd
 import numpy as np
@@ -11,33 +12,39 @@ from collections import Counter, defaultdict
 import re
 import sys
 
-sem = asyncio.Semaphore(15)
-lock = asyncio.Lock()
 
-def build_reference(path: str) -> tuple[gumpy.Genome, dict[str, gumpy.Gene]]:
+def build_reference(
+    path: str, build: bool = False
+) -> tuple[gumpy.Genome, dict[str, gumpy.Gene]]:
     """Build the reference genome object and all genes within it
 
     Args:
         path (str): Path to genbank file
+        build (bool, optional): Whether to build the genome objects from scratch
 
     Returns:
         gumpy.Genome: Genome object
     """
-    # ref = gumpy.Genome(path)
-    # ref_genes = {}
-    # for gene in ref.genes.keys():
-    #     ref_genes[gene] = ref.build_gene(gene)
-    # pickle.dump(ref_genes, open("reference_genes.pkl", "wb"))
-    # pickle.dump(ref, open("reference.pkl", "wb"))
-    ref = pickle.load(open("reference.pkl", "rb"))
-    ref_genes = pickle.load(open("reference_genes.pkl", "rb"))
+    if build:
+        ref = gumpy.Genome(path)
+        ref_genes = {}
+        for gene in ref.genes.keys():
+            ref_genes[gene] = ref.build_gene(gene)
+        pickle.dump(ref_genes, open("reference_genes.pkl", "wb"))
+        pickle.dump(ref, open("reference.pkl", "wb"))
+    else:
+        ref = pickle.load(open("reference.pkl", "rb"))
+        ref_genes = pickle.load(open("reference_genes.pkl", "rb"))
+
     return ref, ref_genes
+
 
 def background(f):
     def wrapped(*args, **kwargs):
         return asyncio.get_event_loop().run_in_executor(None, f, *args, **kwargs)
 
     return wrapped
+
 
 def build_vcf(row: pd.Series) -> gumpy.VCFFile:
     """Parse the ref/alt from the row and build a VCF object for it
@@ -48,9 +55,9 @@ def build_vcf(row: pd.Series) -> gumpy.VCFFile:
     Returns:
         gumpy.VCFFile: VCF file object resulting
     """
-    pos = row['position']
-    ref = row['reference_nucleotide']
-    alt = row['alternative_nucleotide']
+    pos = row["position"]
+    ref = row["reference_nucleotide"]
+    alt = row["alternative_nucleotide"]
     vcf = f"""##fileformat=VCFv4.2
 ##source=minos, version 0.12.5
 ##fileDate=2023-10-28
@@ -77,7 +84,9 @@ NC_000962.3	{pos}	.	{ref}	{alt}	.	PASS	.	GT:DP:ALLELE_DP:FRS:COV_TOTAL:COV:GT_CO
     return v
 
 
-def parse_ref_alt(reference: gumpy.Genome, ref_genes: dict[str, gumpy.Gene], row: pd.Series) -> list[str]:
+def parse_ref_alt(
+    reference: gumpy.Genome, ref_genes: dict[str, gumpy.Gene], row: pd.Series
+) -> list[str]:
     """Use the ref/alt/pos to pull out the variants via VCF
 
     Args:
@@ -88,9 +97,9 @@ def parse_ref_alt(reference: gumpy.Genome, ref_genes: dict[str, gumpy.Gene], row
     Returns:
         list[str]: List of mutations in GARC originating from this row
     """
-    ref = row['reference_nucleotide'].lower()
-    alt = row['alternative_nucleotide'].lower()
-    pos = int(row['position'])
+    ref = row["reference_nucleotide"].lower()
+    alt = row["alternative_nucleotide"].lower()
+    pos = int(row["position"])
 
     # Find out which genes this affects
     genes = set()
@@ -99,7 +108,7 @@ def parse_ref_alt(reference: gumpy.Genome, ref_genes: dict[str, gumpy.Gene], row
         g = reference.stacked_gene_name[mask]
         for g_ in g:
             genes.add(g_)
-    
+
     vcf = build_vcf(row)
     sample = reference + vcf
     garc = []
@@ -107,12 +116,11 @@ def parse_ref_alt(reference: gumpy.Genome, ref_genes: dict[str, gumpy.Gene], row
         if gene:
             ref_gene = ref_genes[gene]
             alt_gene = sample.build_gene(gene)
-            diff =  ref_gene - alt_gene
+            diff = ref_gene - alt_gene
             muts = diff.mutations.tolist()
             for mut in muts:
                 garc.append(gene + "@" + mut)
     return garc
-
 
 
 def shorten_aa(aa: str) -> str:
@@ -124,13 +132,37 @@ def shorten_aa(aa: str) -> str:
     Returns:
         str: Short AA
     """
-    mapping = {'CYS': 'C', 'ASP': 'D', 'SER': 'S', 'GLN': 'Q', 'LYS': 'K',
-     'ILE': 'I', 'PRO': 'P', 'THR': 'T', 'PHE': 'F', 'ASN': 'N', 
-     'GLY': 'G', 'HIS': 'H', 'LEU': 'L', 'ARG': 'R', 'TRP': 'W', 
-     'ALA': 'A', 'VAL':'V', 'GLU': 'E', 'TYR': 'Y', 'MET': 'M'}
+    mapping = {
+        "CYS": "C",
+        "ASP": "D",
+        "SER": "S",
+        "GLN": "Q",
+        "LYS": "K",
+        "ILE": "I",
+        "PRO": "P",
+        "THR": "T",
+        "PHE": "F",
+        "ASN": "N",
+        "GLY": "G",
+        "HIS": "H",
+        "LEU": "L",
+        "ARG": "R",
+        "TRP": "W",
+        "ALA": "A",
+        "VAL": "V",
+        "GLU": "E",
+        "TYR": "Y",
+        "MET": "M",
+    }
     return mapping[aa.upper()]
 
-def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gumpy.Gene], row: pd.Series) -> list[str]:
+
+def parse_to_garc(
+    reference: gumpy.Genome,
+    variant: str,
+    ref_genes: dict[str, gumpy.Gene],
+    row: pd.Series,
+) -> list[str]:
     """Parse the given variant to GARC
 
     Args:
@@ -155,16 +187,16 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
     if lof_match is not None:
         gene = lof_match.groups()[0]
         # Loss of function maps to a few mutations
-        garc.append(gene + "@del_1.0") # Feature ablation
-        garc.append(gene + "@*_fs") # Frameshift
-        if reference.genes[gene]['codes_protein']:
-            garc.append(gene + "@M1?") # Start lost
-            garc.append(gene + "@*!") # Premature stop
+        garc.append(gene + "@del_1.0")  # Feature ablation
+        garc.append(gene + "@*_fs")  # Frameshift
+        if reference.genes[gene]["codes_protein"]:
+            garc.append(gene + "@M1?")  # Start lost
+            garc.append(gene + "@*!")  # Premature stop
         # print(garc)
-    
+
     # ***********************************************************************************
 
-    #rrl_n.705A>G | dnaA_c.-46C>G
+    # rrl_n.705A>G | dnaA_c.-46C>G
     n_snp = re.compile(
         r"""
         ([a-zA-Z_0-9.()]+) # Leading gene name
@@ -174,7 +206,7 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         >
         ([ACGT]) # Alt base
         """,
-        re.VERBOSE
+        re.VERBOSE,
     )
     n_snp_match = n_snp.fullmatch(variant)
     if n_snp_match is not None:
@@ -184,9 +216,9 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
             garc = parse_ref_alt(reference, ref_genes, row)
         else:
             garc.append(gene + "@" + ref.lower() + pos + alt.lower())
-    
+
     # ***********************************************************************************
-    
+
     # Rv1129c_p.Asn5fs
     # I'm assuming this implies a frameshift at any base in the codon
     aa_fs = re.compile(
@@ -197,7 +229,7 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         (\-?[0-9]+) # Position
         fs # Frameshift
         """,
-        re.VERBOSE
+        re.VERBOSE,
     )
     aa_fs_match = aa_fs.fullmatch(variant)
     if aa_fs_match is not None:
@@ -220,7 +252,7 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         ([0-9]+) # Position
         \? # Non synon
         """,
-        re.VERBOSE
+        re.VERBOSE,
     )
     aa_non_synon_match = aa_non_synon.fullmatch(variant)
     if aa_non_synon_match is not None:
@@ -229,7 +261,6 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         g = ref_genes[gene]
         r = g.amino_acid_sequence[g.amino_acid_number == int(pos)][0]
         garc.append(gene + "@" + r + "1?")
-
 
     # ***********************************************************************************
 
@@ -241,7 +272,7 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         ([0-9]+) # Position
         ([A-Z][a-z][a-z]) # AA 3 letter name
         """,
-        re.VERBOSE
+        re.VERBOSE,
     )
     aa_snp_match = aa_snp.fullmatch(variant)
     if aa_snp_match is not None:
@@ -250,9 +281,8 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         alt_aa = shorten_aa(alt_aa)
         garc.append(gene + "@" + ref_aa + pos + alt_aa)
 
-
     # ***********************************************************************************
-    
+
     early_stop = re.compile(
         r"""
         ([a-zA-Z_0-9.()]+) # Leading gene name
@@ -261,20 +291,21 @@ def parse_to_garc(reference: gumpy.Genome, variant: str, ref_genes: dict[str, gu
         ([0-9]+) # Position
         \* # Non synon
         """,
-        re.VERBOSE
+        re.VERBOSE,
     )
     early_stop_match = early_stop.fullmatch(variant)
     if early_stop_match is not None:
         gene, aa, pos = early_stop_match.groups()
         aa = shorten_aa(aa)
         garc.append(gene + "@" + aa + pos + "!")
-    
+
     if len(garc) == 0:
         # If not already parsed, it's an indel
         #   so avoid nomenclature abiguity by parsing ref/alt
         garc = parse_ref_alt(reference, ref_genes, row)
 
     return garc
+
 
 def parse_mutations(scratch: bool = False) -> dict[int, list[str]]:
     """Parse the mutations from the genome coordinates sheet
@@ -284,18 +315,21 @@ def parse_mutations(scratch: bool = False) -> dict[int, list[str]]:
     Returns:
         dict[str, list[str]]: Dict mapping row idx -> list[mutations in garc]
     """
-    coordinates = pd.read_excel("WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Genomic_coordinates")
+    coordinates = pd.read_excel(
+        "WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Genomic_coordinates"
+    )
     if scratch:
         reference, ref_genes = build_reference("NC_000962.3.gbk")
         mutations = {}
         rows = [(idx, row) for idx, row in coordinates.iterrows()]
         for idx, row in tqdm(rows):
-            m = parse_to_garc(reference, row['variant'], ref_genes, row)
+            m = parse_to_garc(reference, row["variant"], ref_genes, row)
             mutations[idx] = m
         pickle.dump(mutations, open("garc_formatted2.pkl", "wb"))
     else:
         mutations = pickle.load(open("garc_formatted2.pkl", "rb"))
-    
+
+
 def parse_confidence_grading(grading: str) -> str:
     """Convert confidence grading to RUS
 
@@ -306,13 +340,14 @@ def parse_confidence_grading(grading: str) -> str:
         str: Corresponding R, U or S
     """
     conversion = {
-        "1) Assoc w R" : "R",
+        "1) Assoc w R": "R",
         "2) Assoc w R - Interim": "R",
         "3) Uncertain significance": "-",
         "4) Not assoc w R - Interim": "S",
-        "5) Not assoc w R": "S"
+        "5) Not assoc w R": "S",
     }
     return conversion[grading]
+
 
 def parse_master_file(master_file: pd.DataFrame) -> dict[str, tuple[str, str]]:
     """Parse the master file to pull out the drug/predictions for each
@@ -325,11 +360,12 @@ def parse_master_file(master_file: pd.DataFrame) -> dict[str, tuple[str, str]]:
     """
     predictions = defaultdict(list)
     for idx, row in master_file.iterrows():
-        drug = row['drug']
-        variant = row['variant']
-        pred = parse_confidence_grading(row['FINAL CONFIDENCE GRADING'])
+        drug = row["drug"]
+        variant = row["variant"]
+        pred = parse_confidence_grading(row["FINAL CONFIDENCE GRADING"])
         predictions[variant].append((drug, pred))
     return predictions
+
 
 def convert_drug(drug: str) -> str:
     """Convert from the long drug names to 3 letter abbreviations
@@ -341,271 +377,308 @@ def convert_drug(drug: str) -> str:
         str: 3 letter drug code
     """
     mapping = {
-        'Amikacin': "AMI",
-        'Bedaquiline': "BDQ", 
-        'Capreomycin': "CAP", 
-        'Clofazimine': "CFZ", 
-        'Delamanid': "DLM", 
-        'Ethambutol': "EMB", 
-        'Ethionamide': "ETH", 
-        'Isoniazid': "INH", 
-        'Kanamycin': "KAN", 
-        'Levofloxacin': "LEV", 
-        'Linezolid': "LZD", 
-        'Moxifloxacin': "MXF", 
-        'Pyrazinamide': "PZA", 
-        'Rifampicin': "RIF", 
-        'Streptomycin': "STM"
+        "Amikacin": "AMI",
+        "Bedaquiline": "BDQ",
+        "Capreomycin": "CAP",
+        "Clofazimine": "CFZ",
+        "Delamanid": "DLM",
+        "Ethambutol": "EMB",
+        "Ethionamide": "ETH",
+        "Isoniazid": "INH",
+        "Kanamycin": "KAN",
+        "Levofloxacin": "LEV",
+        "Linezolid": "LZD",
+        "Moxifloxacin": "MXF",
+        "Pyrazinamide": "PZA",
+        "Rifampicin": "RIF",
+        "Streptomycin": "STM",
     }
     return mapping[drug]
 
-def main():
-    master_file = pd.read_excel("WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Catalogue_master_file", skiprows=[0,1])
-    # print(master_file)
-    predictions = parse_master_file(master_file)
-    coordinates = pd.read_excel("WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Genomic_coordinates")
-    reference, ref_genes = build_reference("NC_000962.3.gbk")
-    # print(coordinates)
 
-    seen = set()
-    # mutations = {}
-    all_garc = {}
-    mutations = pickle.load(open("garc_formatted_all.pkl", "rb"))
-    counting = []
+def show_problems(
+    coordinates: pd.DataFrame, master_file: pd.DataFrame, mutations: list
+):
+    """Print problem rows (and associated info) to stdout
+
+    Args:
+        coordinates (pd.DataFrame): Coordinates sheet
+        master_file(pd.DataFrame): Master sheet
+        mutations: (list): List of mutations in GARC. Corresponds with rows of the coordinates sheet
+    """
     rows = [(idx, row) for idx, row in coordinates.iterrows()]
-    resistance_genes = set()
-    resistance_genes_drug = set()
-    common = {}
-    parsed_rows = ["GENBANK_REFERENCE,CATALOGUE_NAME,CATALOGUE_VERSION,CATALOGUE_GRAMMAR,PREDICTION_VALUES,DRUG,MUTATION,PREDICTION,SOURCE,EVIDENCE,OTHER\n"]
-    COMMON_ALL = "NC_000962.3,WHO-UCN-GTB-PCI-2023.5,1.0,GARC1,RUS,"
-
-    # for idx, row in tqdm(rows):
-        # pred = parse_confidence_grading(master_file[master_file['variant'] == row['variant']]['FINAL CONFIDENCE GRADING'].values[0])
-        # if pred == "R":
-        #     for m in mutations[idx]:
-        #         g = m.split("@")[0]
-        #         resistance_genes.add(g)
-        #         resistance_genes_drug.add((g, master_file[master_file['variant'] == row['variant']]['drug'].values[0]))
-        
-        # # Specific rules which we're ignoring the parsed ref/alt for
-        # # ***********************************************************************************
-        # lof = re.compile(
-        #     r"""
-        #     ([a-zA-Z_0-9.()]+) # Leading gene name
-        #     _LoF # Loss of function
-        #     """,
-        #     re.VERBOSE,
-        # )
-        # lof_match = lof.fullmatch(row['variant'])
-        # if lof_match is not None:
-        #     gene = lof_match.groups()[0]
-        #     garc = []
-        #     # Loss of function maps to a few mutations
-        #     garc.append(gene + "@del_1.0") # Feature ablation
-        #     garc.append(gene + "@*_fs") # Frameshift
-        #     if reference.genes[gene]['codes_protein']:
-        #         first = ref_genes[gene].amino_acid_sequence[0]
-        #         garc.append(gene + "@" + first + "1?") # Start lost
-        #         garc.append(gene + "@*!") # Premature stop
-        #     common[row['variant']] = garc
-        #     if pred == "R":
-        #         for m in garc:
-        #             g = m.split("@")[0]
-        #             resistance_genes.add(g)
-        #             resistance_genes_drug.add((g, master_file[master_file['variant'] == row['variant']]['drug'].values[0]))
-        #     continue
-
-        # # ***********************************************************************************
-
-        # aa_fs = re.compile(
-        #     r"""
-        #     ([a-zA-Z_0-9.()]+) # Leading gene name
-        #     _p\. # Protein coding
-        #     ([A-Z][a-z][a-z]) # AA 3 letter name
-        #     (\-?[0-9]+) # Position
-        #     fs # Frameshift
-        #     """,
-        #     re.VERBOSE
-        # )
-        # aa_fs_match = aa_fs.fullmatch(row['variant'])
-        # if aa_fs_match is not None:
-        #     gene, aa, pos = aa_fs_match.groups()
-        #     garc = []
-        #     aa = shorten_aa(aa)
-        #     g = ref_genes[gene]
-        #     r = g.nucleotide_number[g.is_cds][g.codon_number == int(pos)]
-        #     for i in r:
-        #         garc.append(gene + "@" + str(i) + "_fs")
-        #     common[row['variant']] = garc
-        #     if pred == "R":
-        #         for m in garc:
-        #             g = m.split("@")[0]
-        #             resistance_genes.add(g)
-        #             resistance_genes_drug.add((g, master_file[master_file['variant'] == row['variant']]['drug'].values[0]))
-        #     continue
-
-        # # ***********************************************************************************
-
-        # aa_non_synon = re.compile(
-        #     r"""
-        #     ([a-zA-Z_0-9.()]+) # Leading gene name
-        #     _p\. # Protein coding
-        #     ([A-Z][a-z][a-z]) # AA 3 letter name
-        #     ([0-9]+) # Position
-        #     \? # Non synon
-        #     """,
-        #     re.VERBOSE
-        # )
-        # aa_non_synon_match = aa_non_synon.fullmatch(row['variant'])
-        # if aa_non_synon_match is not None:
-        #     gene, aa, pos = aa_non_synon_match.groups()
-        #     garc = []
-        #     aa = shorten_aa(aa)
-        #     g = ref_genes[gene]
-        #     r = g.amino_acid_sequence[g.amino_acid_number == int(pos)][0]
-        #     garc.append(gene + "@" + r + "1?")
-        #     common[row['variant']] = garc
-        #     if pred == "R":
-        #         for m in garc:
-        #             g = m.split("@")[0]
-        #             resistance_genes.add(g)
-        #             resistance_genes_drug.add((g, master_file[master_file['variant'] == row['variant']]['drug'].values[0]))
-        #     continue
-
-        # # ***********************************************************************************
-
-        # early_stop = re.compile(
-        #     r"""
-        #     ([a-zA-Z_0-9.()]+) # Leading gene name
-        #     _p\. # Protein coding
-        #     ([A-Z][a-z][a-z]) # AA 3 letter name
-        #     ([0-9]+) # Position
-        #     \* # Non synon
-        #     """,
-        #     re.VERBOSE
-        # )
-        # early_stop_match = early_stop.fullmatch(row['variant'])
-        # if early_stop_match is not None:
-        #     gene, aa, pos = early_stop_match.groups()
-        #     garc = []
-        #     aa = shorten_aa(aa)
-        #     garc.append(gene + "@" + aa + pos + "!")
-        #     common[row['variant']] = garc
-        #     if pred == "R":
-        #         for m in garc:
-        #             g = m.split("@")[0]
-        #             resistance_genes.add(g)
-        #             resistance_genes_drug.add((g, master_file[master_file['variant'] == row['variant']]['drug'].values[0]))
-        #     continue
-
-
-
-        # # Otherwise, look for a common mutation between all of the parsed rows
-        # if common.get(row['variant']) is None:
-        #     common[row['variant']] = set(mutations[idx])
-        #     all_garc[row['variant']] = mutations[idx]
-        # else:
-        #     common[row['variant']] = common[row['variant']].intersection(set(mutations[idx]))
-        #     all_garc[row['variant']] += mutations[idx]
-    
-    
-    # for variant in common.keys():
-    #     if len(common[variant]) == 0:
-    #             print("No common variant found: ", variant, Counter(all_garc[variant]))
-        # for drug, pred in predictions[variant]:
-        #     if len(common[variant]) == 0:
-        #         print("No common variant found: ", variant, Counter(all_garc[variant]))
-        #     for mutation in common[variant]:
-        #         g = mutation.split("@")[0]
-        #         if g in resistance_genes:
-        #             parsed_rows.append(COMMON_ALL + convert_drug(drug) + "," + mutation + "," + pred + ",{},{},{}\n")
-    
-    # for gene, drug in resistance_genes_drug:
-    #     print(gene, convert_drug(drug))
-    #     defaults = [
-    #         (gene+"@*?", 'U'), (gene+"@-*?", 'U'),
-    #         (gene+"@*_indel", "U"), (gene+"@-*_indel", 'U')
-    #         ]
-    #     if reference.genes[gene]['codes_protein']:
-    #         defaults.append((gene+"@*=","S"))
-    #     for rule, pred in defaults:
-    #         parsed_rows.append(COMMON_ALL + convert_drug(drug) + "," + rule + "," + pred + ",{},{},{}\n")
-
-    # with open("first-parse-all.csv", "w") as f:
-    #     for row in parsed_rows:
-    #         f.write(row)
 
     common = {}
     all_garc = {}
     not_common = {}
+    counting = []
+    seen = set()
     for idx, row in rows:
-        counting.append(row['variant'])
-        # if "ext" in row['variant']:# == 'ahpC_p.Ter196ext*?':
-        #     pred = parse_confidence_grading(master_file[master_file['Unnamed: 3'] == row['variant']]['Unnamed: 105'].values[0])
-        #     print(idx, row['variant'], mutations[idx], pred)
-        if common.get(row['variant']) is None:
-            common[row['variant']] = set(mutations[idx])
-            not_common[row['variant']] = set(mutations[idx]).difference(common[row['variant']])
-            all_garc[row['variant']] = dict(((idx+2, mutations[idx]),))
+        counting.append(row["variant"])
+        if common.get(row["variant"]) is None:
+            common[row["variant"]] = set(mutations[idx])
+            not_common[row["variant"]] = set(mutations[idx]).difference(
+                common[row["variant"]]
+            )
+            all_garc[row["variant"]] = dict(((idx + 2, mutations[idx]),))
         else:
-            common[row['variant']] = common[row['variant']].intersection(set(mutations[idx]))
-            not_common[row['variant']] = not_common[row['variant']].union(set(mutations[idx])).difference(common[row['variant']])
-            all_garc[row['variant']][idx+2] = mutations[idx]
-        # if row['variant'] in seen:
-        #     continue
-        
-        # m = parse_to_garc(reference, row['variant'], ref_genes, row)
-        # mutations[idx] = m
+            common[row["variant"]] = common[row["variant"]].intersection(
+                set(mutations[idx])
+            )
+            not_common[row["variant"]] = (
+                not_common[row["variant"]]
+                .union(set(mutations[idx]))
+                .difference(common[row["variant"]])
+            )
+            all_garc[row["variant"]][idx + 2] = mutations[idx]
+        seen.add(row["variant"])
 
-        seen.add(row['variant'])
-
-    c = Counter(counting)
-    non_common = 0
     for var in common.keys():
         negative = re.compile(r".*-[0-9]+.*")
         negative_match = negative.fullmatch(var)
         if negative_match is not None:
             continue
-        pred = parse_confidence_grading(master_file[master_file['variant'] == var]['FINAL CONFIDENCE GRADING'].values[0])
-        # if pred != "S":
-        # n_snp = re.compile(
-        #     r"""
-        #     ([a-zA-Z_0-9.()]+) # Leading gene name
-        #     _[nc]\. # Nucleotide SNP
-        #     (\-?[0-9]+) # Position
-        #     ([ACGT]) # Ref base
-        #     >
-        #     ([ACGT]) # Alt base
-        #     """,
-        #     re.VERBOSE
-        # )
-        # n_snp_match = n_snp.fullmatch(var)
-        # if n_snp_match is not None:
-        #     gene, pos, ref, alt = n_snp_match.groups()
-        #     expected = gene + "@" + ref.lower() + pos + alt.lower()
-        #     if expected not in all_garc[var]:
+        pred = parse_confidence_grading(
+            master_file[master_file["variant"] == var][
+                "FINAL CONFIDENCE GRADING"
+            ].values[0]
+        )
         if len(common[var]) == 0:
             print(var, all_garc[var], pred, sep="\t")
-#             elif len(common[var]) != 0 and expected not in common[var]:
-#                 print("Not in common: ", expected, var, Counter(all_garc[var]), pred)
-#                 print()
-#             # if ">" in var:
-#                 # print(var, Counter(all_garc[var]), pred, c[var])
-#                 non_common += 1
-#     print(non_common)
-
-#     # too_many = 0
-#     # for var in not_common.keys():
-#     #     if len(not_common[var]) != 0 and len(common[var]) != 0:
-#     #         pred = parse_confidence_grading(master_file[master_file['Unnamed: 3'] == var]['Unnamed: 105'].values[0])
-#     #         print(var, Counter(all_garc[var]), pred, c[var])
-#     #         too_many += 1
-#     # print(too_many)
 
 
-#     # pickle.dump(mutations, open("garc_formatted2.pkl", "wb"))
-#     # print(c)
+def catalogue_to_garc(
+    rows: list,
+    master_file: pd.DataFrame,
+    mutations: list,
+    reference: gumpy.Genome,
+    ref_genes: dict[str, gumpy.Gene],
+):
+    """Convert the catalogue to useable GARC
+
+    Args:
+        rows (list): List of (idx, HGVS) for rows in the coordinates sheet
+        master_file (pd.DataFrame): Master file parsed from xlsx
+        mutations (list): Mutations parsed from ref/alt pairs
+        reference (gumpy.Genome): Reference genome
+        ref_genes (dict[str, gumpy.Gene]): Dict mapping gene name -> gumpy Gene object
+    """
+    seen = set()
+    common = {}
+    all_garc = {}
+    resistance_genes = set()
+    resistance_genes_drug = set()
+    predictions = parse_master_file(master_file)
+    parsed_rows = [
+        "GENBANK_REFERENCE,CATALOGUE_NAME,CATALOGUE_VERSION,CATALOGUE_GRAMMAR,PREDICTION_VALUES,DRUG,MUTATION,PREDICTION,SOURCE,EVIDENCE,OTHER\n"
+    ]
+    COMMON_ALL = "NC_000962.3,WHO-UCN-GTB-PCI-2023.5,1.0,GARC1,RUS,"
+    for idx, row in tqdm(rows):
+        drug = master_file[master_file["variant"] == row["variant"]]["drug"].values[0]
+        pred = parse_confidence_grading(
+            master_file[master_file["variant"] == row["variant"]][
+                "FINAL CONFIDENCE GRADING"
+            ].values[0]
+        )
+        if pred == "R":
+            for m in mutations[idx]:
+                g = m.split("@")[0]
+                resistance_genes.add(g)
+                resistance_genes_drug.add((g, drug))
+
+        if (row["variant"], drug) in seen:
+            continue
+
+        # Specific rules which we're ignoring the parsed ref/alt for
+        # ***********************************************************************************
+        lof = re.compile(
+            r"""
+            ([a-zA-Z_0-9.()]+) # Leading gene name
+            _LoF # Loss of function
+            """,
+            re.VERBOSE,
+        )
+        lof_match = lof.fullmatch(row["variant"])
+        if lof_match is not None:
+            seen.add((row["variant"], drug))
+            gene = lof_match.groups()[0]
+            garc = []
+            # Loss of function maps to a few mutations
+            garc.append(gene + "@del_1.0")  # Feature ablation
+            garc.append(gene + "@*_fs")  # Frameshift
+            if reference.genes[gene]["codes_protein"]:
+                first = ref_genes[gene].amino_acid_sequence[0]
+                garc.append(gene + "@" + first + "1?")  # Start lost
+                garc.append(gene + "@*!")  # Premature stop
+            common[row["variant"]] = garc
+            if pred == "R":
+                for m in garc:
+                    g = m.split("@")[0]
+                    resistance_genes.add(g)
+                    resistance_genes_drug.add((g, drug))
+            continue
+
+        # ***********************************************************************************
+
+        aa_fs = re.compile(
+            r"""
+            ([a-zA-Z_0-9.()]+) # Leading gene name
+            _p\. # Protein coding
+            ([A-Z][a-z][a-z]) # AA 3 letter name
+            (\-?[0-9]+) # Position
+            fs # Frameshift
+            """,
+            re.VERBOSE,
+        )
+        aa_fs_match = aa_fs.fullmatch(row["variant"])
+        if aa_fs_match is not None:
+            seen.add((row["variant"], drug))
+            gene, aa, pos = aa_fs_match.groups()
+            garc = []
+            aa = shorten_aa(aa)
+            g = ref_genes[gene]
+            r = g.nucleotide_number[g.is_cds][g.codon_number == int(pos)]
+            for i in r:
+                garc.append(gene + "@" + str(i) + "_fs")
+            common[row["variant"]] = garc
+            if pred == "R":
+                for m in garc:
+                    g = m.split("@")[0]
+                    resistance_genes.add(g)
+                    resistance_genes_drug.add((g, drug))
+            continue
+
+        # ***********************************************************************************
+
+        aa_non_synon = re.compile(
+            r"""
+            ([a-zA-Z_0-9.()]+) # Leading gene name
+            _p\. # Protein coding
+            ([A-Z][a-z][a-z]) # AA 3 letter name
+            ([0-9]+) # Position
+            \? # Non synon
+            """,
+            re.VERBOSE,
+        )
+        aa_non_synon_match = aa_non_synon.fullmatch(row["variant"])
+        if aa_non_synon_match is not None:
+            seen.add((row["variant"], drug))
+            gene, aa, pos = aa_non_synon_match.groups()
+            garc = []
+            aa = shorten_aa(aa)
+            g = ref_genes[gene]
+            r = g.amino_acid_sequence[g.amino_acid_number == int(pos)][0]
+            garc.append(gene + "@" + r + "1?")
+            common[row["variant"]] = garc
+            if pred == "R":
+                for m in garc:
+                    g = m.split("@")[0]
+                    resistance_genes.add(g)
+                    resistance_genes_drug.add((g, drug))
+            continue
+
+        # ***********************************************************************************
+
+        early_stop = re.compile(
+            r"""
+            ([a-zA-Z_0-9.()]+) # Leading gene name
+            _p\. # Protein coding
+            ([A-Z][a-z][a-z]) # AA 3 letter name
+            ([0-9]+) # Position
+            \* # Non synon
+            """,
+            re.VERBOSE,
+        )
+        early_stop_match = early_stop.fullmatch(row["variant"])
+        if early_stop_match is not None:
+            seen.add((row["variant"], drug))
+            gene, aa, pos = early_stop_match.groups()
+            garc = []
+            aa = shorten_aa(aa)
+            garc.append(gene + "@" + aa + pos + "!")
+            common[row["variant"]] = garc
+            if pred == "R":
+                for m in garc:
+                    g = m.split("@")[0]
+                    resistance_genes.add(g)
+                    resistance_genes_drug.add((g, drug))
+            continue
+
+        # Otherwise, look for a common mutation between all of the parsed rows
+        if common.get(row["variant"]) is None:
+            common[row["variant"]] = set(mutations[idx])
+            all_garc[row["variant"]] = mutations[idx]
+        else:
+            common[row["variant"]] = common[row["variant"]].intersection(
+                set(mutations[idx])
+            )
+            all_garc[row["variant"]] += mutations[idx]
+
+        for variant in common.keys():
+            for drug, pred in predictions[variant]:
+                for mutation in common[variant]:
+                    g = mutation.split("@")[0]
+                    if g in resistance_genes:
+                        parsed_rows.append(
+                            COMMON_ALL
+                            + convert_drug(drug)
+                            + ","
+                            + mutation
+                            + ","
+                            + pred
+                            + ",{},{},{}\n"
+                        )
+
+    with open("default.csv") as f:
+        for row in f:
+            parsed_rows.append(row.strip())
+
+    with open("first-pass.csv", "w") as f:
+        for row in parsed_rows:
+            f.write(row)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--problems",
+        action="store_true",
+        default=False,
+        required=False,
+        help="Print information about problem rows to stdout",
+    )
+    parser.add_argument(
+        "--parse",
+        action="store_true",
+        default=False,
+        required=False,
+        help="Write the preliminary catalogue, 'first-pass.csv'",
+    )
+    options = parser.parse_args()
+    if not options.problems and not options.parse:
+        print("No args given!")
+        return
+
+    master_file = pd.read_excel(
+        "WHO-UCN-TB-2023.5-eng.xlsx",
+        sheet_name="Catalogue_master_file",
+        skiprows=[0, 1],
+    )
+    coordinates = pd.read_excel(
+        "WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Genomic_coordinates"
+    )
+    try:
+        reference, ref_genes = build_reference("NC_000962.3.gbk")
+    except:
+        reference, ref_genes = build_reference("NC_000962.3.gbk", build=True)
+    mutations = pickle.load(open("garc_formatted_all.pkl", "rb"))
+    rows = [(idx, row) for idx, row in coordinates.iterrows()]
+
+    if options.problems:
+        show_problems(coordinates, master_file, mutations)
+    if options.parse:
+        catalogue_to_garc(rows, master_file, mutations, reference, ref_genes)
+
 
 if __name__ == "__main__":
     main()
-
