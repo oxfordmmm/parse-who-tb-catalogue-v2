@@ -614,20 +614,20 @@ def catalogue_to_garc(
             )
             all_garc[row["variant"]] += mutations[idx]
 
-        for variant in common.keys():
-            for drug, pred in predictions[variant]:
-                for mutation in common[variant]:
-                    g = mutation.split("@")[0]
-                    if g in resistance_genes:
-                        parsed_rows.append(
-                            COMMON_ALL
-                            + convert_drug(drug)
-                            + ","
-                            + mutation
-                            + ","
-                            + pred
-                            + ",{},{},{}\n"
-                        )
+    for variant in common.keys():
+        for drug, pred in predictions[variant]:
+            for mutation in common[variant]:
+                g = mutation.split("@")[0]
+                if g in resistance_genes:
+                    parsed_rows.append(
+                        COMMON_ALL
+                        + convert_drug(drug)
+                        + ","
+                        + mutation
+                        + ","
+                        + pred
+                        + ",{},{},{}\n"
+                    )
 
     with open("default.csv") as f:
         for row in f:
