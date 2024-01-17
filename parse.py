@@ -342,7 +342,7 @@ def parse_confidence_grading(grading: str) -> str:
     conversion = {
         "1) Assoc w R": "R",
         "2) Assoc w R - Interim": "R",
-        "3) Uncertain significance": "-",
+        "3) Uncertain significance": "U",
         "4) Not assoc w R - Interim": "S",
         "5) Not assoc w R": "S",
     }
@@ -631,7 +631,7 @@ def catalogue_to_garc(
 
     with open("default.csv") as f:
         for row in f:
-            parsed_rows.append(row.strip())
+            parsed_rows.append(row)
 
     with open("first-pass.csv", "w") as f:
         for row in parsed_rows:
