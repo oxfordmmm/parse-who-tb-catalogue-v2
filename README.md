@@ -51,6 +51,11 @@ The catalogue returns nucleotide level descriptions of synonymous AA SNPs - bein
 ##### Solution
 Exclude such rows from the catalogue. They are a known bug.
 
+### Catalogue defines intra-gene regions
+The catalouge has several (618) ref/alt pairs which do not lie within the gene regions defined by `gumpy`. Most of these are due to very long promoter regions used by the catalogue, which are never picked up by `gumpy` due to an internal limit of 100 bases for a promoter.
+
+##### Solution
+Do nothing (for now). Including such rows would require a significant rethink of how `gumpy` assigns promoter regions.
 
 
 ## Known issues

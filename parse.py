@@ -702,6 +702,81 @@ def test(
     print(len(master_variants))
 
 
+def filter():
+    """Remove superfluous rows which are covered by default or broad rules
+    Exactly the same proceedure as with v1
+    """
+    catalogue = pd.read_csv("first-pass.csv")
+    resistanceGenes = set()
+
+    #Find all of the genes which confer resistance to a given drug
+    for i, row in catalogue.iterrows():
+        prediction = row['PREDICTION']
+        mutation = row['MUTATION']
+        drug = row['DRUG']
+        if prediction == "R":
+            resistanceGenes.add((mutation.split("@")[0], drug))
+
+    fixed = {col: [] for col in catalogue}
+    for i, row in catalogue.iterrows():
+        toDelete = False
+        prediction = row['PREDICTION']
+        mutation = row['MUTATION']
+        if (mutation.split("@")[0], row['DRUG']) not in resistanceGenes:
+            toDelete = True
+            print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene")
+        elif prediction == 'U':
+            indel = re.compile(r"""
+                            ([a-zA-Z_0-9]+@) #Leading gene name
+                            (
+                                (-?[0-9]+_((ins)|(del))_[acgotxz]*) #indel
+                            )
+                            """, re.VERBOSE)
+            if indel.fullmatch(mutation):
+                #Matched an indel generic so delete
+                toDelete = True
+                print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *_indel-->U")
+
+            nonsynon = re.compile(r"""
+                                ([a-zA-Z_0-9]+@) #Leading gene name
+                                (([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])-?[0-9]+([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])) #SNP
+                                """, re.VERBOSE)
+            if nonsynon.fullmatch(mutation):
+                _, _, base1, base2 = nonsynon.fullmatch(mutation).groups()
+                if base1 != base2:
+                    #This matches the gene@*? or gene@-*? so delete
+                    toDelete = True
+                    print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *?-->U or -*?-->U")
+            
+        elif prediction == 'S':
+            #Checking for gene@*=
+            #This has now become gene@A*A(&gene@<nucleotide><pos><nucleotide>){1,3}
+            synon = re.compile(r"""
+                                ([a-zA-Z_0-9]+@) #Leading gene name
+                                (([!ACDEFGHIKLMNOPQRSTVWXYZ])[0-9]+([!ACDEFGHIKLMNOPQRSTVWXYZ])) #SNP
+                                (& #And the nucleotide(s) causing this
+                                ([a-zA-Z_0-9]+@) #Gene
+                                ([a-z][0-9]+[a-z]))+ #Nucleotide SNP
+                                """, re.VERBOSE)
+            if synon.fullmatch(mutation):
+                matches = synon.fullmatch(mutation).groups()
+                base1 = matches[2]
+                base2 = matches[3]
+                if base1 == base2:
+                    #Matches the synonymous mutation so delete
+                    toDelete = True
+                    print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *=-->S")
+        
+        if not toDelete:
+            #We want to keep this one, so add to fixed
+            for col in row.axes[0]:
+                fixed[col].append(row[col])
+
+    catalogue = pd.DataFrame(fixed)
+
+    catalogue.to_csv("first-pass-filtered.csv", index=False)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -721,9 +796,14 @@ def main():
     parser.add_argument(
         "--t", action="store_true", default=False, required=False, help="Testing run"
     )
+    parser.add_argument("--filter", action="store_true", default=False, required=False, help="Filter out rows covered by general rules.")
     options = parser.parse_args()
-    if not options.problems and not options.parse and not options.t:
+    if not options.problems and not options.parse and not options.t and not options.filter:
         print("No args given!")
+        return
+    
+    if options.filter:
+        filter()
         return
 
     master_file = pd.read_excel(
