@@ -577,33 +577,6 @@ def catalogue_to_garc(
                     resistance_genes_drug.add((g, drug))
             continue
 
-        # ***********************************************************************************
-
-        # early_stop = re.compile(
-        #     r"""
-        #     ([a-zA-Z_0-9.()]+) # Leading gene name
-        #     _p\. # Protein coding
-        #     ([A-Z][a-z][a-z]) # AA 3 letter name
-        #     ([0-9]+) # Position
-        #     \* # Non synon
-        #     """,
-        #     re.VERBOSE,
-        # )
-        # early_stop_match = early_stop.fullmatch(row["variant"])
-        # if early_stop_match is not None:
-        #     seen.add((row["variant"], drug))
-        #     gene, aa, pos = early_stop_match.groups()
-        #     garc = []
-        #     aa = shorten_aa(aa)
-        #     garc.append(gene + "@" + aa + pos + "!")
-        #     common[row["variant"]] = garc
-        #     if pred == "R":
-        #         for m in garc:
-        #             g = m.split("@")[0]
-        #             resistance_genes.add(g)
-        #             resistance_genes_drug.add((g, drug))
-        #     continue
-
         # Otherwise, look for a common mutation between all of the parsed rows
         if common.get(row["variant"]) is None:
             common[row["variant"]] = set(mutations[idx])
@@ -617,7 +590,22 @@ def catalogue_to_garc(
     for variant in common.keys():
         for drug, pred in predictions[variant]:
             if len(common[variant]) == 0:
-                # If we've hit a problem row, just take coordinate rows for now
+                # If we've hit a problem row, exclude non-synon SNPs (due to known issue),
+                # then just take coordinate rows for now
+                nc_snp = re.compile(
+                    r"""
+                    ([a-zA-Z_0-9.()]+) # Leading gene name
+                    _c\.
+                    ([0-9]+) # Position
+                    ([ACGT]) # Ref base
+                    >
+                    ([ACGT]) # Alt base
+                """,
+                    re.VERBOSE,
+                )
+                nc_snp_match = nc_snp.fullmatch(variant)
+                if nc_snp_match is not None:
+                    continue
                 common[variant] = sorted(list(set(all_garc[variant])))
             for mutation in common[variant]:
                 g = mutation.split("@")[0]
@@ -645,7 +633,12 @@ def catalogue_to_garc(
             f.write(row)
 
 
-def test(rows: list, master_file: pd.DataFrame, reference: gumpy.Genome, ref_genes: dict[str, gumpy.Gene]):
+def test(
+    rows: list,
+    master_file: pd.DataFrame,
+    reference: gumpy.Genome,
+    ref_genes: dict[str, gumpy.Gene],
+):
     """Run some testing stuff...
 
     Args:
@@ -656,14 +649,13 @@ def test(rows: list, master_file: pd.DataFrame, reference: gumpy.Genome, ref_gen
     """
     coordinates_variants = set()
     for idx, row in rows:
-        coordinates_variants.add(row['variant'])
-    
+        coordinates_variants.add(row["variant"])
+
     master_variants = set()
     new_rows = []
     for idx, row in master_file.iterrows():
-        master_variants.add(row['variant'])
-        if row['variant'] not in coordinates_variants:
-
+        master_variants.add(row["variant"])
+        if row["variant"] not in coordinates_variants:
             lof = re.compile(
                 r"""
                 ([a-zA-Z_0-9.()]+) # Leading gene name
@@ -683,20 +675,30 @@ def test(rows: list, master_file: pd.DataFrame, reference: gumpy.Genome, ref_gen
                     garc.append(gene + "@" + first + "1?")  # Start lost
                     garc.append(gene + "@*!")  # Premature stop
                 for g in garc:
-                    new_rows.append((g, row['drug'], parse_confidence_grading(row['FINAL CONFIDENCE GRADING'])))
-            elif "deletion" in row['variant']:
-                new_rows.append((row['variant'].split("_")[0]+"@*_del", row['drug'], parse_confidence_grading(row['FINAL CONFIDENCE GRADING'])))
+                    new_rows.append(
+                        (
+                            g,
+                            row["drug"],
+                            parse_confidence_grading(row["FINAL CONFIDENCE GRADING"]),
+                        )
+                    )
+            elif "deletion" in row["variant"]:
+                new_rows.append(
+                    (
+                        row["variant"].split("_")[0] + "@del_1.0",
+                        row["drug"],
+                        parse_confidence_grading(row["FINAL CONFIDENCE GRADING"]),
+                    )
+                )
             else:
-                print(f"{row['variant']} not in coordinates! Prediction: {parse_confidence_grading(row['FINAL CONFIDENCE GRADING'])}")
+                print(
+                    f"{row['variant']} not in coordinates! Prediction: {parse_confidence_grading(row['FINAL CONFIDENCE GRADING'])}"
+                )
     COMMON_ALL = "NC_000962.3,WHO-UCN-GTB-PCI-2023.5,1.0,GARC1,RUS,"
     for mutation, drug, pred in new_rows:
-        print(COMMON_ALL
-                + convert_drug(drug)
-                + ","
-                + mutation
-                + ","
-                + pred
-                + ",{},{},{}")
+        print(
+            COMMON_ALL + convert_drug(drug) + "," + mutation + "," + pred + ",{},{},{}"
+        )
     print(len(master_variants))
 
 
@@ -717,11 +719,7 @@ def main():
         help="Write the preliminary catalogue, 'first-pass.csv'",
     )
     parser.add_argument(
-        "--t",
-        action="store_true",
-        default=False,
-        required=False,
-        help="Testing run"
+        "--t", action="store_true", default=False, required=False, help="Testing run"
     )
     options = parser.parse_args()
     if not options.problems and not options.parse and not options.t:
