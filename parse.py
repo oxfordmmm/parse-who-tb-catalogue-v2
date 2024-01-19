@@ -708,6 +708,7 @@ def filter():
     """
     catalogue = pd.read_csv("first-pass.csv")
     resistanceGenes = set()
+    seen = set()
 
     #Find all of the genes which confer resistance to a given drug
     for i, row in catalogue.iterrows():
@@ -722,6 +723,10 @@ def filter():
         toDelete = False
         prediction = row['PREDICTION']
         mutation = row['MUTATION']
+        if (mutation, row['DRUG'], prediction) in seen:
+            # Avoid duplicate rows
+            print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it already exists!")
+            toDelete = True
         if (mutation.split("@")[0], row['DRUG']) not in resistanceGenes:
             toDelete = True
             print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene")
@@ -771,6 +776,8 @@ def filter():
             #We want to keep this one, so add to fixed
             for col in row.axes[0]:
                 fixed[col].append(row[col])
+
+        seen.add((mutation, row['DRUG'], prediction))
 
     catalogue = pd.DataFrame(fixed)
 
