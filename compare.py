@@ -74,10 +74,14 @@ def pheno_df_to_dict(phenotypes: pd.DataFrame) -> dict[str, str]:
     pheno = {}
     for _, row in phenotypes.iterrows():
         drug = row['DRUG']
-        p = row['BINARY_PHENOTYPE']
+        p = row['PHENOTYPE']
         if drug in pheno.keys():
-            print("Duplicate drug pheno for ", row['UNIQUEID'])
-        pheno[drug] = p
+            #print("Duplicate drug pheno for ", row['UNIQUEID'])
+            if isinstance(p, str) and p in "RFUS"  and "RFUS".index(pheno[drug]) < "RFUS".index(p):
+                pheno[drug] = p
+        else:
+            if isinstance(p, str) and p in "RFUS":
+                pheno[drug] = p
     return pheno
 
 def f1_score(tp: int, tn: int, fp: int, fn: int) -> float:
@@ -149,7 +153,7 @@ def recall(tp: int, tn: int, fp: int, fn: int) -> float:
         return 0
 
 
-def compare(phenotypes: list[dict[str, dict[str, str]]], drugs: list[str]) -> None:
+def compare(phenotypes: list[dict[str, dict[str, str]]], drugs: set[str]) -> None:
     """Compare the performance of the catalogues
 
     Args:
@@ -173,7 +177,9 @@ def compare(phenotypes: list[dict[str, dict[str, str]]], drugs: list[str]) -> No
         real = item['real']
 
         for drug in real.keys():
-            drugs.add(drug)
+            if drug not in drugs:
+                continue
+            #drugs.add(drug)
             if real[drug] == "R":
                 if v1.get(drug,"") == "R":
                     tp_1[drug] += 1
@@ -207,7 +213,11 @@ def compare(phenotypes: list[dict[str, dict[str, str]]], drugs: list[str]) -> No
         print(f"Recall: {recall(tp_2[drug], tn_2[drug], fp_2[drug], fn_2[drug])}")
         print(f"Accuracy: {accuracy(tp_2[drug], tn_2[drug], fp_2[drug], fn_2[drug])}")
         print(f"F1 score: {f1_score(tp_2[drug], tn_2[drug], fp_2[drug], fn_2[drug])}")
-    
+        print()
+        if f1_score(tp_1[drug], tn_1[drug], fp_1[drug], fn_1[drug]) <= f1_score(tp_2[drug], tn_2[drug], fp_2[drug], fn_2[drug]):
+            print("WHO v2 is >= WHO v1")
+        else:
+            print("Worse performance with WHO v2!")
     print("************************************************")
     print("OVERALL")
     tp_1 = sum(tp_1.values())
@@ -235,36 +245,34 @@ def compare(phenotypes: list[dict[str, dict[str, str]]], drugs: list[str]) -> No
 
 if __name__ == "__main__":
     v1 = piezo.ResistanceCatalogue(
-        "../tuberculosis_amr_catalogues/catalogues/NC_000962.3/NC_000962.3_WHO-UCN-GTB-PCI-2021.7_v1.1_GARC1_RFUS.csv"
+        "NC_000962.3_WHO-UCN-GTB-PCI-2021.7_v1.1_GARC1_RFUS.csv"
     )
-    v2 = piezo.ResistanceCatalogue("first-parse.csv")
+    v2 = piezo.ResistanceCatalogue("first-pass-filtered.csv")
     reference, ref_genes = build_reference("NC_000962.3.gbk")
 
-    # mutations = pd.read_csv("MUTATIONS.csv.gz")
-    # phenotypes = pd.read_csv("PHENOTYPES.csv.gz")
-    mutations = pd.read_pickle("MUTATIONS.pkl.gz").reset_index()
-    phenotypes = pd.read_pickle("PHENOTYPES.pkl.gz").reset_index()
-
-    ids = set()
-    for _, row in phenotypes.iterrows():
-        ids.add(row["UNIQUEID"])
+    mutations = pd.read_pickle("MUTATIONS.pkl.gz").reset_index(level=[1,2])
+    m_ids = set(mutations.index)
+    phenotypes = pd.read_pickle("DST_MEASUREMENTS.pkl.gz").reset_index(level=[1])
+    ids = set(phenotypes.index)
+    print(f"{len(m_ids)} mutation samples")
+    print(f"{len(ids)} phenotype samples")
+    print(f"{len(m_ids.intersection(ids))} in both")
 
     all_phenotypes = []
     skipped = 0
     drugs = sorted(list(set(v1.catalogue.drugs).union(v2.catalogue.drugs)))
-
-    
-    for id_ in tqdm(sorted(list(ids))):
-        predicted_phenotypes_v1, s = predict_phenotypes(mutations[mutations['UNIQUEID'] == id_], v1, ref_genes)
-        predicted_phenotypes_v2, s = predict_phenotypes(mutations[mutations['UNIQUEID'] == id_], v2, ref_genes)
+    for id_ in tqdm(sorted(list(m_ids.intersection(ids)))):
+        muts = mutations[mutations.index == id_]
+        predicted_phenotypes_v1, s = predict_phenotypes(muts, v1, ref_genes)
+        predicted_phenotypes_v2, s = predict_phenotypes(muts, v2, ref_genes)
         skipped += s
-        actual_phenotypes = pheno_df_to_dict(phenotypes[phenotypes['UNIQUEID'] == id_])
+        actual_phenotypes = pheno_df_to_dict(phenotypes[phenotypes.index == id_])
         all_phenotypes.append({
             "v1": predicted_phenotypes_v1,
             "v2": predicted_phenotypes_v2,
             "real": actual_phenotypes
         })
-    
-    compare(all_phenotypes)
+    pickle.dump(all_phenotypes, open("all_phenotypes.pkl", "wb"))
+    # all_phenotypes = pickle.load(open("all_phenotypes.pkl", "rb"))
+    compare(all_phenotypes, set(drugs))
     print(f"Skippped {skipped} rows due to invalid mutations")
-
