@@ -84,8 +84,6 @@ def compare(catalogues: dict[str, pd.DataFrame], drug: str) -> None:
     # for rule in sorted(list(just_cat1)):
     #     print(rule)
 
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--catalogues", action="append", nargs=2, required=True, help="Paths to catalogues to compare")
@@ -98,7 +96,16 @@ if __name__ == "__main__":
         for catalogue in options.catalogues[0]
     }
 
-    for drug in options.drugs[0]:
+    if options.drugs[0][0] == 'ALL':
+        drugs = set()
+        for cat in catalogues:
+            for drug in catalogues[cat].DRUG.unique():
+                drugs.add(drug)
+        drugs = sorted(list(drugs))
+    else:
+        drugs = options.drugs[0]
+
+    for drug in drugs:
         compare(catalogues, drug)
         print()
 
