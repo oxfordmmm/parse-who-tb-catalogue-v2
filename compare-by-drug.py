@@ -6,6 +6,8 @@ import pandas as pd
 def classify_rule(row: pd.core.series.Series) -> str:
     rule = row.gene_mutation
     if '*' in rule:
+        if row.phenotype == "R":
+            return "LoF"
         return 'default'
     elif '&' in rule:
         return 'combination'
@@ -15,8 +17,10 @@ def classify_rule(row: pd.core.series.Series) -> str:
         return 'insertion'
     elif '_del' in rule:
         return 'deletion'
-    elif 'del' in rule:
-        return 'deletion'
+    elif 'del_' in rule:
+        if "del_0.0" in rule:
+            return "default"
+        return 'large_deletion'
     elif '-' in rule:
         return 'promoter'
     else:

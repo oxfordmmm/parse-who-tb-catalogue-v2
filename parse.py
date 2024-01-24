@@ -607,9 +607,40 @@ def catalogue_to_garc(
                 if nc_snp_match is not None:
                     continue
                 common[variant] = sorted(list(set(all_garc[variant])))
-            for mutation in common[variant]:
-                g = mutation.split("@")[0]
-                if g in resistance_genes:
+
+            # Use multi-mutations where applicable 
+            # (rules we manually unpack are lists, ref/alt rules are sets)
+            if isinstance(common[variant], set):
+                # Check for large dels (especially ones parsed from ref/alt)
+                # These will occur with specific dels and shouldn't be joined
+                large_del = re.compile(
+                    r"""
+                    ([a-zA-Z_0-9.()]+) # Leading gene name
+                    @del_0\.([0-9][0-9]) # Any large del
+                    """, re.VERBOSE
+                )
+                safe_mutations = []
+                for mutation in common[variant]:
+                    large_del_match = large_del.fullmatch(mutation)
+                    if large_del_match is not None:
+                        # We have a large del so we only really care about this
+                        safe_mutations = [mutation]
+                        break
+                    safe_mutations.append(mutation)
+
+
+                mutation = "&".join(sorted(list(safe_mutations)))
+                parsed_rows.append(
+                    COMMON_ALL
+                    + convert_drug(drug)
+                    + ","
+                    + mutation
+                    + ","
+                    + pred
+                    + ",{},{},{}\n"
+                )
+            else:
+                for mutation in common[variant]:
                     parsed_rows.append(
                         COMMON_ALL
                         + convert_drug(drug)
@@ -620,9 +651,9 @@ def catalogue_to_garc(
                         + ",{},{},{}\n"
                     )
 
-    with open("default.csv") as f:
-        for row in f:
-            parsed_rows.append(row)
+    # with open("default.csv") as f:
+    #     for row in f:
+    #         parsed_rows.append(row)
 
     with open("expert-rules.csv") as f:
         for row in f:
@@ -702,9 +733,12 @@ def test(
     print(len(master_variants))
 
 
-def filter():
+def filter(reference_genes: dict[str, gumpy.Gene]):
     """Remove superfluous rows which are covered by default or broad rules
-    Exactly the same proceedure as with v1
+    Almost exactly the same proceedure as with v1
+
+    Args:
+        reference_genes (dict[str, gumpy.Gene]): Dict mapping gene name -> gene object
     """
     catalogue = pd.read_csv("first-pass.csv")
     resistanceGenes = set()
@@ -716,7 +750,11 @@ def filter():
         mutation = row['MUTATION']
         drug = row['DRUG']
         if prediction == "R":
-            resistanceGenes.add((mutation.split("@")[0], drug))
+            if "&" in mutation:
+                for m in mutation.split("&"):
+                    resistanceGenes.add((m.split("@")[0], drug))
+            else:
+                resistanceGenes.add((mutation.split("@")[0], drug))
 
     fixed = {col: [] for col in catalogue}
     for i, row in catalogue.iterrows():
@@ -778,6 +816,29 @@ def filter():
                 fixed[col].append(row[col])
 
         seen.add((mutation, row['DRUG'], prediction))
+    
+    # Add default rules for all resistance genes
+    for gene, drug in sorted(list(resistanceGenes)):
+        defaults = [
+            (gene+"@*?", 'U'), (gene+"@-*?", 'U'),
+            (gene+"@*_indel", "U"), (gene+"@-*_indel", 'U'),
+            (gene+"@del_0.0", "U")
+            ]
+        if reference_genes[gene].codes_protein:
+            defaults.append((gene+"@*=","S"))
+        for mut, pred in defaults:
+            fixed['GENBANK_REFERENCE'].append('NC_000962.3')
+            fixed['CATALOGUE_NAME'].append('WHO-UCN-GTB-PCI-2023.5')
+            fixed['CATALOGUE_VERSION'].append('1.0')
+            fixed['CATALOGUE_GRAMMAR'].append('GARC1')
+            fixed['PREDICTION_VALUES'].append("RUS")
+            fixed['DRUG'].append(drug)
+            fixed['MUTATION'].append(mut)
+            fixed['PREDICTION'].append(pred)
+            fixed['SOURCE'].append('{}')
+            fixed['EVIDENCE'].append('{}')
+            fixed['OTHER'].append('{}')
+
 
     catalogue = pd.DataFrame(fixed)
 
@@ -808,9 +869,15 @@ def main():
     if not options.problems and not options.parse and not options.t and not options.filter:
         print("No args given!")
         return
+
+    # Get the reference genome and genes. Trying from pkl first for speed.
+    try:
+        reference, ref_genes = build_reference("NC_000962.3.gbk")
+    except:
+        reference, ref_genes = build_reference("NC_000962.3.gbk", build=True)
     
     if options.filter:
-        filter()
+        filter(ref_genes)
         return
 
     master_file = pd.read_excel(
@@ -821,12 +888,6 @@ def main():
     coordinates = pd.read_excel(
         "WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Genomic_coordinates"
     )
-
-    # Get the reference genome and genes. Trying from pkl first for speed.
-    try:
-        reference, ref_genes = build_reference("NC_000962.3.gbk")
-    except:
-        reference, ref_genes = build_reference("NC_000962.3.gbk", build=True)
 
     mutations = pickle.load(open("garc_formatted_all.pkl", "rb"))
     rows = [(idx, row) for idx, row in coordinates.iterrows()]
