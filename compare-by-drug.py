@@ -3,6 +3,61 @@
 import argparse
 import pandas as pd
 
+def classify_rule(row: pd.core.series.Series) -> str:
+    rule = row.gene_mutation
+    if '*' in rule:
+        if row.phenotype == "R":
+            return "LoF"
+        return 'default'
+    elif '&' in rule:
+        return 'combination'
+    elif '_fs' in rule:
+        return 'frameshift'
+    elif '_ins' in rule:
+        return 'insertion'
+    elif '_del' in rule:
+        return 'deletion'
+    elif 'del_' in rule:
+        if "del_0.0" in rule:
+            return "default"
+        return 'large_deletion'
+    elif '-' in rule:
+        return 'promoter'
+    else:
+        return 'snp'
+
+def create_df(both: set[str], just_cat1: set[str], just_cat2: set[str]) -> pd.DataFrame:
+    """Create a DataFrame with the rules and their catalogue membership for further analysis
+    
+    Args:
+        both (set[str]): Rules that are in both catalogues
+        just_cat1 (set[str]): Rules that are only in catalogue 1
+        just_cat2 (set[str]): Rules that are only in catalogue 2
+
+    Returns:
+        pandas.DataFrame: Dataframe of rules and their catalogue membership
+    """
+    df_both = pd.DataFrame(list(both), columns=['gene_mutation', 'phenotype'])
+    df_both['membership'] = 'both'
+    df_both['cat1'] = True
+    df_both['cat2'] = True
+
+    df_just_cat1 = pd.DataFrame(list(just_cat1), columns=['gene_mutation', 'phenotype'])
+    df_just_cat1['membership'] = 'cat1'
+    df_just_cat1['cat1'] = True
+    df_just_cat1['cat2'] = False
+
+    df_just_cat2 = pd.DataFrame(list(just_cat2), columns=['gene_mutation', 'phenotype'])
+    df_just_cat2['membership'] = 'cat2'
+    df_just_cat2['cat1'] = False
+    df_just_cat2['cat2'] = True
+
+    df = pd.concat([df_both, df_just_cat1, df_just_cat2])
+
+    df['rule-type'] = df.apply(classify_rule, axis=1)
+
+    return df
+
 def rename_ordering(ordering: list[str]) -> list[str]:
     """Rename the ordering from filepath to nice names
 
@@ -29,6 +84,9 @@ def compare(catalogues: dict[str, pd.DataFrame], drug: str) -> None:
     Args:
         catalogues (dict[str, pd.DataFrame]): Mapping of path -> parsed catalogue
         drug (str): 3 letter drug code
+
+    Returns:
+        pandas.DataFrame: Dataframe of rules and their catalogue membership
     """
     print(drug)
     ordering = sorted(list(catalogues.keys()))
@@ -56,7 +114,7 @@ def compare(catalogues: dict[str, pd.DataFrame], drug: str) -> None:
         if mutation in cat2.keys():
             # Same mutation in both, check if predictions match
             if cat1[mutation] == cat2[mutation]:
-                both.add(mutation)
+                both.add((mutation, cat1[mutation]))
             else:
                 cat1_different_pred.add((mutation, cat1[mutation], cat2[mutation]))
         else:
@@ -69,7 +127,7 @@ def compare(catalogues: dict[str, pd.DataFrame], drug: str) -> None:
         if mutation in cat1.keys():
             # Same mutation in both, check if predictions match
             if cat1[mutation] == cat2[mutation]:
-                both.add(mutation)
+                both.add((mutation, cat1[mutation]))
             else:
                 cat2_different_pred.add((mutation, cat1[mutation], cat2[mutation]))
         else:
@@ -80,16 +138,23 @@ def compare(catalogues: dict[str, pd.DataFrame], drug: str) -> None:
     print(f"{ordering[1]} has {len(just_cat2)} more rules")
     print(f"{ordering[0]} has different predictions for the same mutation for {len(cat1_different_pred)} rules")
     print(f"{ordering[1]} has different predictions for the same mutation for {len(cat2_different_pred)} rules")
+
+    if options.write_csv:
+        df = create_df(both, just_cat1, just_cat2)
+        df['drug'] = drug
+        df = df[['drug', 'membership','cat1','cat2','rule-type', 'phenotype', 'gene_mutation']]
+        return df
+    else:
+        return None
     # print(f"{ordering[0]} extra rules:")
     # for rule in sorted(list(just_cat1)):
     #     print(rule)
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--catalogues", action="append", nargs=2, required=True, help="Paths to catalogues to compare")
     parser.add_argument("--drugs", action="append", nargs="+", required=True, help="3 letter drug codes to find results for")
+    parser.add_argument("--write-csv", action='store_true', help="write out the rules and their catalogue membership to a CSV file for further analysis")
     options = parser.parse_args()
 
     #Parse the catalogues
@@ -98,9 +163,29 @@ if __name__ == "__main__":
         for catalogue in options.catalogues[0]
     }
 
-    for drug in options.drugs[0]:
-        compare(catalogues, drug)
+    if options.drugs[0][0] == 'ALL':
+        dfs = []
+        drugs = set()
+        for cat in catalogues:
+            for drug in catalogues[cat].DRUG.unique():
+                drugs.add(drug)
+        drugs = sorted(list(drugs))
+    else:
+        drugs = options.drugs[0]
+
+
+    for drug in drugs:
+        if options.drugs[0][0] != 'ALL':
+            df = compare(catalogues, drug)
+            df.to_csv(f"{drug}.csv", index=False)
+        else:
+            dfs.append(compare(catalogues, drug))
+
         print()
+
+    if options.drugs[0][0] == 'ALL':
+        df = pd.concat(dfs)
+        df.to_csv(f"ALL.csv", index=False)
 
 
 
