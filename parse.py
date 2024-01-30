@@ -10,7 +10,7 @@ import asyncio
 import tempfile
 from collections import Counter, defaultdict
 import re
-import sys
+import json
 
 
 def build_reference(
@@ -447,6 +447,66 @@ def show_problems(
             print(var, all_garc[var], pred, sep="\t")
 
 
+def check(a, b):
+    if np.isnan(a) or np.isnan(b):
+        return
+    # if a != b:
+    #     print(a, b)
+    assert a >= b, f"{a} != {b}"
+
+
+def safe_solo(solo) -> int | None:
+    """Take a value from the master sheet and conver to None if applicable
+
+    Args:
+        solo (Any): Solo from master sheet
+
+    Returns:
+        int | None: Integer if int, None if nan
+    """
+    if isinstance(solo, str):
+        return solo
+    if np.isnan(solo):
+        return None
+    return solo
+
+
+def get_evidences(master_file: pd.DataFrame) -> tuple[dict, dict]:
+    """Parse the evidence fields out of the master sheet.
+
+    Args:
+        master_file (pd.DataFrame): Master file sheet
+
+    Returns:
+        tuple[dict, dict]: Tuple of (dict mapping (HGVS variant, drug) -> evidence JSON, dict mapping (HGVS variant, drug) -> other JSON)
+    """
+    evidences = {}
+    others = {}
+    print(Counter(master_file["DATASET(S)"]))
+    for _, row in master_file.iterrows():
+        variant = row["variant"]
+        drug = convert_drug(row["drug"])
+        if evidences.get((variant, drug)) is not None:
+            pred = parse_confidence_grading(row["FINAL CONFIDENCE GRADING"])
+            print(
+                f">1 row for {variant} -> {drug}. This one is {pred}. Last is {parse_confidence_grading(others.get((variant, drug))['FINAL_CONFIDENCE_GRADING'])}"
+            )
+
+        evidences[(variant, drug)] = {
+            "Observed_samples": {
+                "Present_SOLO_SR": safe_solo(row["Present_SOLO_SR"]),
+                "Present_SOLO_R": safe_solo(row["Present_SOLO_R"]),
+                "Present_SOLO_S": safe_solo(row["Present_SOLO_S"]),
+            },
+            "Additional grading criteria applied": safe_solo(
+                row["Additional grading criteria applied"]
+            ),
+            "FINAL CONFIDENCE GRADING": row["FINAL CONFIDENCE GRADING"],
+            "INITIAL CONFIDENCE GRADING": row["INITIAL CONFIDENCE GRADING"],
+        }
+    return evidences, others
+
+
 def catalogue_to_garc(
     rows: list,
     master_file: pd.DataFrame,
@@ -463,16 +523,15 @@ def catalogue_to_garc(
         reference (gumpy.Genome): Reference genome
         ref_genes (dict[str, gumpy.Gene]): Dict mapping gene name -> gumpy Gene object
     """
+    evidences, others = get_evidences(master_file)
     seen = set()
     common = {}
     all_garc = {}
     resistance_genes = set()
     resistance_genes_drug = set()
     predictions = parse_master_file(master_file)
-    parsed_rows = [
-        "GENBANK_REFERENCE,CATALOGUE_NAME,CATALOGUE_VERSION,CATALOGUE_GRAMMAR,PREDICTION_VALUES,DRUG,MUTATION,PREDICTION,SOURCE,EVIDENCE,OTHER\n"
-    ]
-    COMMON_ALL = "NC_000962.3,WHO-UCN-GTB-PCI-2023.5,1.0,GARC1,RUS,"
+    parsed_rows = []
+    COMMON_ALL = ["NC_000962.3", "WHO-UCN-GTB-PCI-2023.5", "1.0", "GARC1", "RUS"]
     for idx, row in tqdm(rows):
         drug = master_file[master_file["variant"] == row["variant"]]["drug"].values[0]
         pred = parse_confidence_grading(
@@ -608,7 +667,7 @@ def catalogue_to_garc(
                     continue
                 common[variant] = sorted(list(set(all_garc[variant])))
 
-            # Use multi-mutations where applicable 
+            # Use multi-mutations where applicable
             # (rules we manually unpack are lists, ref/alt rules are sets)
             if isinstance(common[variant], set):
                 # Check for large dels (especially ones parsed from ref/alt)
@@ -617,7 +676,8 @@ def catalogue_to_garc(
                     r"""
                     ([a-zA-Z_0-9.()]+) # Leading gene name
                     @del_0\.([0-9][0-9]) # Any large del
-                    """, re.VERBOSE
+                    """,
+                    re.VERBOSE,
                 )
                 safe_mutations = []
                 for mutation in common[variant]:
@@ -628,40 +688,61 @@ def catalogue_to_garc(
                         break
                     safe_mutations.append(mutation)
 
-
                 mutation = "&".join(sorted(list(safe_mutations)))
                 parsed_rows.append(
-                    COMMON_ALL
-                    + convert_drug(drug)
-                    + ","
-                    + mutation
-                    + ","
-                    + pred
-                    + ",{},{},{}\n"
+                    [
+                        *COMMON_ALL,
+                        convert_drug(drug),
+                        mutation,
+                        pred,
+                        json.dumps({"WHO HGVS": variant}),
+                        json.dumps(evidences.get((variant, convert_drug(drug)), {})),
+                        json.dumps(others.get((variant, convert_drug(drug)), {})),
+                    ]
                 )
             else:
+                lof = re.compile(
+                    r"""
+                    ([a-zA-Z_0-9.()]+) # Leading gene name
+                    _LoF # Loss of function
+                    """,
+                    re.VERBOSE,
+                )
+                lof_match = lof.fullmatch(variant)
                 for mutation in common[variant]:
                     parsed_rows.append(
-                        COMMON_ALL
-                        + convert_drug(drug)
-                        + ","
-                        + mutation
-                        + ","
-                        + pred
-                        + ",{},{},{}\n"
+                        [
+                            *COMMON_ALL,
+                            convert_drug(drug),
+                            mutation,
+                            pred,
+                            json.dumps({"WHO HGVS": variant}),
+                            json.dumps(
+                                evidences.get((variant, convert_drug(drug)), {})
+                            ),
+                            json.dumps(others.get((variant, convert_drug(drug)), {})),
+                        ]
                     )
 
-    # with open("default.csv") as f:
-    #     for row in f:
-    #         parsed_rows.append(row)
-
-    with open("expert-rules.csv") as f:
-        for row in f:
-            parsed_rows.append(row)
-
-    with open("first-pass.csv", "w") as f:
-        for row in parsed_rows:
-            f.write(row)
+    expert = pd.read_csv("expert-rules.csv")
+    cat = pd.DataFrame(
+        parsed_rows,
+        columns=[
+            "GENBANK_REFERENCE",
+            "CATALOGUE_NAME",
+            "CATALOGUE_VERSION",
+            "CATALOGUE_GRAMMAR",
+            "PREDICTION_VALUES",
+            "DRUG",
+            "MUTATION",
+            "PREDICTION",
+            "SOURCE",
+            "EVIDENCE",
+            "OTHER",
+        ],
+    )
+    cat = pd.concat([cat, expert])
+    cat.to_csv("first-pass.csv", index=False)
 
 
 def test(
@@ -678,6 +759,7 @@ def test(
         reference (gumpy.Genome): Reference genome object
         ref_genes (dict[str, gumpy.Gene]): Dict mapping gene name -> gene object
     """
+    evidences, others = get_evidences(master_file)
     coordinates_variants = set()
     for idx, row in rows:
         coordinates_variants.add(row["variant"])
@@ -711,6 +793,17 @@ def test(
                             g,
                             row["drug"],
                             parse_confidence_grading(row["FINAL CONFIDENCE GRADING"]),
+                            json.dumps({"WHO HGVS": row["variant"]}),
+                            json.dumps(
+                                evidences.get(
+                                    (row["variant"], convert_drug(row["drug"])), {}
+                                )
+                            ),
+                            json.dumps(
+                                others.get(
+                                    (row["variant"], convert_drug(row["drug"])), {}
+                                )
+                            ),
                         )
                     )
             elif "deletion" in row["variant"]:
@@ -719,23 +812,61 @@ def test(
                         row["variant"].split("_")[0] + "@del_1.0",
                         row["drug"],
                         parse_confidence_grading(row["FINAL CONFIDENCE GRADING"]),
+                        json.dumps({"WHO HGVS": row["variant"]}),
+                        json.dumps(
+                            evidences.get(
+                                (row["variant"], convert_drug(row["drug"])), {}
+                            )
+                        ),
+                        json.dumps(
+                            others.get((row["variant"], convert_drug(row["drug"])), {})
+                        ),
                     )
                 )
             else:
                 print(
                     f"{row['variant']} not in coordinates! Prediction: {parse_confidence_grading(row['FINAL CONFIDENCE GRADING'])}"
                 )
-    COMMON_ALL = "NC_000962.3,WHO-UCN-GTB-PCI-2023.5,1.0,GARC1,RUS,"
-    for mutation, drug, pred in new_rows:
-        print(
-            COMMON_ALL + convert_drug(drug) + "," + mutation + "," + pred + ",{},{},{}"
+    COMMON_ALL = ["NC_000962.3", "WHO-UCN-GTB-PCI-2023.5", "1.0", "GARC1", "RUS"]
+    parsed_rows = []
+    for mutation, drug, pred, source, evidence, other in new_rows:
+        # print(
+        #     COMMON_ALL + convert_drug(drug) + "," + mutation + "," + pred + ",{}," + json.dumps(evidence) + "," + json.dumps(other)
+        # )
+        parsed_rows.append(
+            [
+                *COMMON_ALL,
+                convert_drug(drug),
+                mutation,
+                pred,
+                source,
+                evidence,
+                other,
+            ]
         )
+    cat = pd.DataFrame(
+        parsed_rows,
+        columns=[
+            "GENBANK_REFERENCE",
+            "CATALOGUE_NAME",
+            "CATALOGUE_VERSION",
+            "CATALOGUE_GRAMMAR",
+            "PREDICTION_VALUES",
+            "DRUG",
+            "MUTATION",
+            "PREDICTION",
+            "SOURCE",
+            "EVIDENCE",
+            "OTHER",
+        ],
+    )
+    cat.to_csv("expert-rules.csv", index=False)
     print(len(master_variants))
 
 
 def filter(reference_genes: dict[str, gumpy.Gene]):
     """Remove superfluous rows which are covered by default or broad rules
-    Almost exactly the same proceedure as with v1
+    Almost exactly the same proceedure as with v1. Also adds default rules
 
     Args:
         reference_genes (dict[str, gumpy.Gene]): Dict mapping gene name -> gene object
@@ -743,102 +874,152 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
     catalogue = pd.read_csv("first-pass.csv")
     resistanceGenes = set()
     seen = set()
+    lof_genes = {}
 
-    #Find all of the genes which confer resistance to a given drug
+    # Find all of the genes which confer resistance to a given drug
     for i, row in catalogue.iterrows():
-        prediction = row['PREDICTION']
-        mutation = row['MUTATION']
-        drug = row['DRUG']
+        prediction = row["PREDICTION"]
+        mutation = row["MUTATION"]
+        drug = row["DRUG"]
+        if "LoF" in json.loads(row["SOURCE"]).get("WHO HGVS"):
+            # Unpacked LoF rows have different source (for now)
+            lof_genes[(mutation.split("@")[0], drug)] = prediction
         if prediction == "R":
             if "&" in mutation:
                 for m in mutation.split("&"):
                     resistanceGenes.add((m.split("@")[0], drug))
             else:
                 resistanceGenes.add((mutation.split("@")[0], drug))
-
     fixed = {col: [] for col in catalogue}
     for i, row in catalogue.iterrows():
         toDelete = False
-        prediction = row['PREDICTION']
-        mutation = row['MUTATION']
-        if (mutation, row['DRUG'], prediction) in seen:
+        prediction = row["PREDICTION"]
+        mutation = row["MUTATION"]
+        if (mutation, row["DRUG"], prediction) in seen:
             # Avoid duplicate rows
-            print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it already exists!")
+            print(
+                f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it already exists!"
+            )
             toDelete = True
-        if (mutation.split("@")[0], row['DRUG']) not in resistanceGenes:
+
+        if (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes:
             toDelete = True
-            print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene")
-        elif prediction == 'U':
-            indel = re.compile(r"""
+            print(
+                f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene"
+            )
+
+        elif prediction == "U":
+            indel = re.compile(
+                r"""
                             ([a-zA-Z_0-9]+@) #Leading gene name
                             (
                                 (-?[0-9]+_((ins)|(del))_[acgotxz]*) #indel
                             )
-                            """, re.VERBOSE)
+                            """,
+                re.VERBOSE,
+            )
             if indel.fullmatch(mutation):
-                #Matched an indel generic so delete
+                # Matched an indel generic so delete
                 toDelete = True
-                print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *_indel-->U")
+                print(
+                    f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *_indel-->U"
+                )
 
-            nonsynon = re.compile(r"""
+            nonsynon = re.compile(
+                r"""
                                 ([a-zA-Z_0-9]+@) #Leading gene name
                                 (([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])-?[0-9]+([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])) #SNP
-                                """, re.VERBOSE)
+                                """,
+                re.VERBOSE,
+            )
             if nonsynon.fullmatch(mutation):
                 _, _, base1, base2 = nonsynon.fullmatch(mutation).groups()
                 if base1 != base2:
-                    #This matches the gene@*? or gene@-*? so delete
+                    # This matches the gene@*? or gene@-*? so delete
                     toDelete = True
-                    print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *?-->U or -*?-->U")
-            
-        elif prediction == 'S':
-            #Checking for gene@*=
-            #This has now become gene@A*A(&gene@<nucleotide><pos><nucleotide>){1,3}
-            synon = re.compile(r"""
+                    print(
+                        f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *?-->U or -*?-->U"
+                    )
+
+        elif prediction == "S":
+            # Checking for gene@*=
+            # This has now become gene@A*A(&gene@<nucleotide><pos><nucleotide>){1,3}
+            synon = re.compile(
+                r"""
                                 ([a-zA-Z_0-9]+@) #Leading gene name
                                 (([!ACDEFGHIKLMNOPQRSTVWXYZ])[0-9]+([!ACDEFGHIKLMNOPQRSTVWXYZ])) #SNP
                                 (& #And the nucleotide(s) causing this
                                 ([a-zA-Z_0-9]+@) #Gene
                                 ([a-z][0-9]+[a-z]))+ #Nucleotide SNP
-                                """, re.VERBOSE)
+                                """,
+                re.VERBOSE,
+            )
             if synon.fullmatch(mutation):
                 matches = synon.fullmatch(mutation).groups()
                 base1 = matches[2]
                 base2 = matches[3]
                 if base1 == base2:
-                    #Matches the synonymous mutation so delete
+                    # Matches the synonymous mutation so delete
                     toDelete = True
-                    print(f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *=-->S")
-        
+                    print(
+                        f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *=-->S"
+                    )
+
+        if lof_genes.get((mutation.split("@")[0], row["DRUG"])) is not None:
+            # This matches a default rule for LoF
+            # Fist check this predicts <= LoF for this gene
+            if "RUS".index(
+                lof_genes[(mutation.split("@")[0], row["DRUG"])]
+            ) >= "RUS".index(prediction):
+                fs = re.compile(
+                    r"""
+                    ([a-zA-Z_0-9]+@) #Leading gene name
+                    [0-9]+ #pos
+                    _fs
+                    """,
+                    re.VERBOSE,
+                )
+                fs_match = fs.fullmatch(mutation)
+                if fs_match is not None:
+                    # This matches the default rule so remove it
+                    toDelete = True
+                    print(
+                        f"Removing {mutation}:{row['DRUG']}:{prediction} as it matches {mutation.split('@')[0]}_LoF:{lof_genes.get((mutation.split('@')[0], row['DRUG']))}"
+                    )
+
         if not toDelete:
-            #We want to keep this one, so add to fixed
+            # We want to keep this one, so add to fixed
             for col in row.axes[0]:
                 fixed[col].append(row[col])
 
-        seen.add((mutation, row['DRUG'], prediction))
-    
+            if "&" in mutation:
+                print(mutation, drug, prediction)
+
+        seen.add((mutation, row["DRUG"], prediction))
+
     # Add default rules for all resistance genes
     for gene, drug in sorted(list(resistanceGenes)):
         defaults = [
-            (gene+"@*?", 'U'), (gene+"@-*?", 'U'),
-            (gene+"@*_indel", "U"), (gene+"@-*_indel", 'U'),
-            (gene+"@del_0.0", "U")
-            ]
+            (gene + "@*?", "U"),
+            (gene + "@-*?", "U"),
+            (gene + "@*_indel", "U"),
+            (gene + "@-*_indel", "U"),
+            (gene + "@del_0.0", "U"),
+        ]
         if reference_genes[gene].codes_protein:
-            defaults.append((gene+"@*=","S"))
+            defaults.append((gene + "@*=", "S"))
         for mut, pred in defaults:
-            fixed['GENBANK_REFERENCE'].append('NC_000962.3')
-            fixed['CATALOGUE_NAME'].append('WHO-UCN-GTB-PCI-2023.5')
-            fixed['CATALOGUE_VERSION'].append('1.0')
-            fixed['CATALOGUE_GRAMMAR'].append('GARC1')
-            fixed['PREDICTION_VALUES'].append("RUS")
-            fixed['DRUG'].append(drug)
-            fixed['MUTATION'].append(mut)
-            fixed['PREDICTION'].append(pred)
-            fixed['SOURCE'].append('{}')
-            fixed['EVIDENCE'].append('{}')
-            fixed['OTHER'].append('{}')
-
+            fixed["GENBANK_REFERENCE"].append("NC_000962.3")
+            fixed["CATALOGUE_NAME"].append("WHO-UCN-GTB-PCI-2023.5")
+            fixed["CATALOGUE_VERSION"].append("1.0")
+            fixed["CATALOGUE_GRAMMAR"].append("GARC1")
+            fixed["PREDICTION_VALUES"].append("RUS")
+            fixed["DRUG"].append(drug)
+            fixed["MUTATION"].append(mut)
+            fixed["PREDICTION"].append(pred)
+            fixed["SOURCE"].append("{}")
+            fixed["EVIDENCE"].append('{"default_rule": "True"}')
+            fixed["OTHER"].append("{}")
 
     catalogue = pd.DataFrame(fixed)
 
@@ -864,9 +1045,20 @@ def main():
     parser.add_argument(
         "--t", action="store_true", default=False, required=False, help="Testing run"
     )
-    parser.add_argument("--filter", action="store_true", default=False, required=False, help="Filter out rows covered by general rules.")
+    parser.add_argument(
+        "--filter",
+        action="store_true",
+        default=False,
+        required=False,
+        help="Filter out rows covered by general rules.",
+    )
     options = parser.parse_args()
-    if not options.problems and not options.parse and not options.t and not options.filter:
+    if (
+        not options.problems
+        and not options.parse
+        and not options.t
+        and not options.filter
+    ):
         print("No args given!")
         return
 
@@ -875,7 +1067,7 @@ def main():
         reference, ref_genes = build_reference("NC_000962.3.gbk")
     except:
         reference, ref_genes = build_reference("NC_000962.3.gbk", build=True)
-    
+
     if options.filter:
         filter(ref_genes)
         return
