@@ -468,7 +468,7 @@ def safe_solo(solo) -> int | None:
         return solo
     if np.isnan(solo):
         return None
-    return solo
+    return int(solo)
 
 
 def get_evidences(master_file: pd.DataFrame) -> tuple[dict, dict]:
@@ -501,8 +501,9 @@ def get_evidences(master_file: pd.DataFrame) -> tuple[dict, dict]:
             "Additional grading criteria applied": safe_solo(
                 row["Additional grading criteria applied"]
             ),
-            "FINAL CONFIDENCE GRADING": row["FINAL CONFIDENCE GRADING"],
-            "INITIAL CONFIDENCE GRADING": row["INITIAL CONFIDENCE GRADING"],
+            "FINAL CONFIDENCE GRADING": safe_solo(row["FINAL CONFIDENCE GRADING"]),
+            "INITIAL CONFIDENCE GRADING": safe_solo(row["INITIAL CONFIDENCE GRADING"]),
+            "WHO HGVS": row["variant"]
         }
     return evidences, others
 
@@ -532,7 +533,12 @@ def catalogue_to_garc(
     predictions = parse_master_file(master_file)
     parsed_rows = []
     COMMON_ALL = ["NC_000962.3", "WHO-UCN-GTB-PCI-2023.5", "1.0", "GARC1", "RUS"]
+    skipped = []
     for idx, row in tqdm(rows):
+        if len(master_file[master_file["variant"] == row["variant"]]) == 0:
+            # Variant isn't in the master file ??????
+            skipped.append(row["variant"])
+            continue
         drug = master_file[master_file["variant"] == row["variant"]]["drug"].values[0]
         pred = parse_confidence_grading(
             master_file[master_file["variant"] == row["variant"]][
@@ -695,7 +701,7 @@ def catalogue_to_garc(
                         convert_drug(drug),
                         mutation,
                         pred,
-                        json.dumps({"WHO HGVS": variant}),
+                        json.dumps({}),
                         json.dumps(evidences.get((variant, convert_drug(drug)), {})),
                         json.dumps(others.get((variant, convert_drug(drug)), {})),
                     ]
@@ -716,7 +722,7 @@ def catalogue_to_garc(
                             convert_drug(drug),
                             mutation,
                             pred,
-                            json.dumps({"WHO HGVS": variant}),
+                            json.dumps({}),
                             json.dumps(
                                 evidences.get((variant, convert_drug(drug)), {})
                             ),
@@ -725,6 +731,7 @@ def catalogue_to_garc(
                     )
 
     expert = pd.read_csv("expert-rules.csv")
+    report_expert = pd.read_csv("report-expert-rules.csv")
     cat = pd.DataFrame(
         parsed_rows,
         columns=[
@@ -741,8 +748,9 @@ def catalogue_to_garc(
             "OTHER",
         ],
     )
-    cat = pd.concat([cat, expert])
+    cat = pd.concat([cat, expert, report_expert])
     cat.to_csv("first-pass.csv", index=False)
+    return skipped
 
 
 def test(
@@ -793,7 +801,7 @@ def test(
                             g,
                             row["drug"],
                             parse_confidence_grading(row["FINAL CONFIDENCE GRADING"]),
-                            json.dumps({"WHO HGVS": row["variant"]}),
+                            json.dumps({}),
                             json.dumps(
                                 evidences.get(
                                     (row["variant"], convert_drug(row["drug"])), {}
@@ -812,7 +820,7 @@ def test(
                         row["variant"].split("_")[0] + "@del_1.0",
                         row["drug"],
                         parse_confidence_grading(row["FINAL CONFIDENCE GRADING"]),
-                        json.dumps({"WHO HGVS": row["variant"]}),
+                        json.dumps({}),
                         json.dumps(
                             evidences.get(
                                 (row["variant"], convert_drug(row["drug"])), {}
@@ -881,7 +889,7 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
         prediction = row["PREDICTION"]
         mutation = row["MUTATION"]
         drug = row["DRUG"]
-        if "LoF" in json.loads(row["SOURCE"]).get("WHO HGVS"):
+        if "LoF" in json.loads(row["EVIDENCE"]).get("WHO HGVS", []):
             # Unpacked LoF rows have different source (for now)
             lof_genes[(mutation.split("@")[0], drug)] = prediction
         if prediction == "R":
@@ -1073,24 +1081,24 @@ def main():
         return
 
     master_file = pd.read_excel(
-        "WHO-UCN-TB-2023.5-eng.xlsx",
+        "WHO-UCN-TB-2023.6-eng.xlsx",
         sheet_name="Catalogue_master_file",
         skiprows=[0, 1],
     )
     coordinates = pd.read_excel(
-        "WHO-UCN-TB-2023.5-eng.xlsx", sheet_name="Genomic_coordinates"
+        "WHO-UCN-TB-2023.6-eng.xlsx", sheet_name="Genomic_coordinates"
     )
 
-    mutations = pickle.load(open("garc_formatted_all.pkl", "rb"))
+    mutations = pickle.load(open("garc_formatted_8_feb_2024.pkl", "rb"))
     rows = [(idx, row) for idx, row in coordinates.iterrows()]
-
+    skipped = None
     if options.problems:
         show_problems(coordinates, master_file, mutations)
     if options.parse:
-        catalogue_to_garc(rows, master_file, mutations, reference, ref_genes)
+        skipped = catalogue_to_garc(rows, master_file, mutations, reference, ref_genes)
     if options.t:
         test(rows, master_file, reference, ref_genes)
-
+    return skipped
 
 if __name__ == "__main__":
-    main()
+    skipped = main()
