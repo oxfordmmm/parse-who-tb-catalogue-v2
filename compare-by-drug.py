@@ -2,6 +2,7 @@
 """
 import argparse
 import pandas as pd
+import re
 
 def classify_rule(row: pd.core.series.Series) -> str:
     rule = row.gene_mutation
@@ -26,31 +27,33 @@ def classify_rule(row: pd.core.series.Series) -> str:
     else:
         return 'snp'
 
-def create_df(both: set[str], just_cat1: set[str], just_cat2: set[str]) -> pd.DataFrame:
+def create_df(both: set[str], just_cat1: set[str], just_cat2: set[str], cat1_name: str, cat2_name: str) -> pd.DataFrame:
     """Create a DataFrame with the rules and their catalogue membership for further analysis
     
     Args:
         both (set[str]): Rules that are in both catalogues
         just_cat1 (set[str]): Rules that are only in catalogue 1
         just_cat2 (set[str]): Rules that are only in catalogue 2
+        cat1_name (str): Nice name for cat1
+        cat2_name (str): Nice name for cat2
 
     Returns:
         pandas.DataFrame: Dataframe of rules and their catalogue membership
     """
     df_both = pd.DataFrame(list(both), columns=['gene_mutation', 'phenotype'])
     df_both['membership'] = 'both'
-    df_both['cat1'] = True
-    df_both['cat2'] = True
+    df_both[cat1_name] = True
+    df_both[cat2_name] = True
 
     df_just_cat1 = pd.DataFrame(list(just_cat1), columns=['gene_mutation', 'phenotype'])
-    df_just_cat1['membership'] = 'cat1'
-    df_just_cat1['cat1'] = True
-    df_just_cat1['cat2'] = False
+    df_just_cat1['membership'] = cat1_name
+    df_just_cat1[cat1_name] = True
+    df_just_cat1[cat2_name] = False
 
     df_just_cat2 = pd.DataFrame(list(just_cat2), columns=['gene_mutation', 'phenotype'])
-    df_just_cat2['membership'] = 'cat2'
-    df_just_cat2['cat1'] = False
-    df_just_cat2['cat2'] = True
+    df_just_cat2['membership'] = cat2_name
+    df_just_cat2[cat1_name] = False
+    df_just_cat2[cat2_name] = True
 
     df = pd.concat([df_both, df_just_cat1, df_just_cat2])
 
@@ -69,11 +72,11 @@ def rename_ordering(ordering: list[str]) -> list[str]:
     """
     # Assumes filenames are sensible
     new_ordering = []
+    version = re.compile(r".*_(v[12]\.[0-9]).*")
     for f in ordering:
-        if "NC_000962.3_WHO-UCN-GTB-PCI-2021.7_v1.1_GARC1_RFUS.csv" in f:
-            new_ordering.append("WHOv1")
-        elif "first-pass-filtered.csv" in f:
-            new_ordering.append("WHOv2")
+        version_match = version.fullmatch(f)
+        if version_match is not None:
+            new_ordering.append(version_match.groups()[0])
         else:
             new_ordering.append(f)
     return new_ordering
@@ -140,9 +143,9 @@ def compare(catalogues: dict[str, pd.DataFrame], drug: str) -> None:
     print(f"{ordering[1]} has different predictions for the same mutation for {len(cat2_different_pred)} rules")
 
     if options.write_csv:
-        df = create_df(both, just_cat1, just_cat2)
+        df = create_df(both, just_cat1, just_cat2, ordering[0], ordering[1])
         df['drug'] = drug
-        df = df[['drug', 'membership','cat1','cat2','rule-type', 'phenotype', 'gene_mutation']]
+        df = df[['drug', 'membership',ordering[0],ordering[1],'rule-type', 'phenotype', 'gene_mutation']]
         return df
     else:
         return None

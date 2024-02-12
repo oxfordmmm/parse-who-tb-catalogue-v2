@@ -16,8 +16,8 @@ pip install -r requirements.txt
 ```
 
 ## Running
-This is still a WIP, so less than ideal. 
-1. Parse every row of the `coordinates` sheet with gumpy. This takes ~3 days. Code is within `parse.py` for this, but not currently available as a CLI option
+This is still a WIP, so code is messy and there's a lot of junk in this repo. 
+1. Parse every row of the `coordinates` sheet with gumpy. This takes ~3 days. Code is within `parse.py` for this, but not currently available as a CLI option. The result is included in this repo for ease of use. Latest: `garc_formatted_8_feb_2024.pkl`
 2. Parse the master file and build a CSV of rows which don't exist in the coordinates sheet: `python parse.py --t`. This produces `expert-rules.csv`
 3. Parse a very verbose and literal translation of the master sheet: `python parse.py --parse`. This produces `first-pass.csv`
 4. Filter out unhelpful rows and add default rules: `python parse.py --filter`. This produces `first-pass-filtered.csv` 
