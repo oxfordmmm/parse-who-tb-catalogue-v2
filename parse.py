@@ -1030,7 +1030,7 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
             fixed["MUTATION"].append(mut)
             fixed["PREDICTION"].append(pred)
             fixed["SOURCE"].append("{}")
-            fixed["EVIDENCE"].append('{"default_rule": "True"}')
+            fixed["EVIDENCE"].append('{"reporting_rule": "True"}')
             fixed["OTHER"].append("{}")
 
     catalogue = pd.DataFrame(fixed)
