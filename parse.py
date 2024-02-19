@@ -687,6 +687,10 @@ def catalogue_to_garc(
                 )
                 safe_mutations = []
                 for mutation in common[variant]:
+                    if "Rv2042c" in mutation:
+                        # These are introduced due to pncA_p.Ter187Trpext*?
+                        # so we shouldn't consider Rv2042c as a resistance gene
+                        continue
                     large_del_match = large_del.fullmatch(mutation)
                     if large_del_match is not None:
                         # We have a large del so we only really care about this
@@ -1026,7 +1030,7 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
             fixed["MUTATION"].append(mut)
             fixed["PREDICTION"].append(pred)
             fixed["SOURCE"].append("{}")
-            fixed["EVIDENCE"].append('{"default_rule": "True"}')
+            fixed["EVIDENCE"].append('{"reporting_rule": "True"}')
             fixed["OTHER"].append("{}")
 
     catalogue = pd.DataFrame(fixed)
