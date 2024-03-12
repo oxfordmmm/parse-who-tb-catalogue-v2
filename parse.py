@@ -894,10 +894,11 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
         mutation = row["MUTATION"]
         drug = row["DRUG"]
         if "LoF" in json.loads(row["EVIDENCE"]).get("WHO HGVS", []):
-            # Unpacked LoF rows have different source (for now)
             lof_genes[(mutation.split("@")[0], drug)] = prediction
         if prediction == "R":
             if "&" in mutation:
+                if mutation[0] == "^":
+                    mutation = mutation[1::]
                 for m in mutation.split("&"):
                     resistanceGenes.add((m.split("@")[0], drug))
             else:
@@ -919,9 +920,10 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
             else:
                 toDelete = False
                 for mut in mutation.split("&"):
-                    if (m.split("@")[0], drug) not in resistanceGenes:
+                    if (mut.split("@")[0], row["DRUG"]) not in resistanceGenes:
+                        print(f"Removing {mutation} --> {row['DRUG']} : {(mut.split('@')[0], row['DRUG'])} as it's not a resistance gene for {mut}")
                         toDelete = True
-        elif (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes:
+        if "^" not in mutation and (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes:
             toDelete = True
             print(
                 f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene"
