@@ -884,7 +884,7 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
         reference_genes (dict[str, gumpy.Gene]): Dict mapping gene name -> gene object
     """
     catalogue = pd.read_csv("first-pass.csv")
-    resistanceGenes = set()
+    resistanceGenes = {("mmpL5", "BDQ"), ("mmpL5", "CFZ")}
     seen = set()
     lof_genes = {}
 
@@ -894,10 +894,11 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
         mutation = row["MUTATION"]
         drug = row["DRUG"]
         if "LoF" in json.loads(row["EVIDENCE"]).get("WHO HGVS", []):
-            # Unpacked LoF rows have different source (for now)
             lof_genes[(mutation.split("@")[0], drug)] = prediction
         if prediction == "R":
             if "&" in mutation:
+                if mutation[0] == "^":
+                    mutation = mutation[1::]
                 for m in mutation.split("&"):
                     resistanceGenes.add((m.split("@")[0], drug))
             else:
@@ -913,8 +914,16 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
                 f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it already exists!"
             )
             toDelete = True
-
-        if (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes:
+        if "&" in mutation:
+            if mutation[0] == "^":
+                toDelete = False
+            else:
+                toDelete = False
+                for mut in mutation.split("&"):
+                    if (mut.split("@")[0], row["DRUG"]) not in resistanceGenes:
+                        print(f"Removing {mutation} --> {row['DRUG']} : {(mut.split('@')[0], row['DRUG'])} as it's not a resistance gene for {mut}")
+                        toDelete = True
+        if "^" not in mutation and (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes:
             toDelete = True
             print(
                 f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene"
@@ -1003,9 +1012,6 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
             # We want to keep this one, so add to fixed
             for col in row.axes[0]:
                 fixed[col].append(row[col])
-
-            if "&" in mutation:
-                print(mutation, drug, prediction)
 
         seen.add((mutation, row["DRUG"], prediction))
 
