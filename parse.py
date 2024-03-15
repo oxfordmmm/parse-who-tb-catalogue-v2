@@ -961,6 +961,8 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
                     print(
                         f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *?-->U or -*?-->U"
                     )
+            if mutation.split("@")[0] == "mmpL5":
+                toDelete = True
 
         elif prediction == "S":
             # Checking for gene@*=
@@ -1017,12 +1019,16 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
 
     # Add default rules for all resistance genes
     for gene, drug in sorted(list(resistanceGenes)):
+        if gene == "mmpL5":
+            pred = "S"
+        else:
+            pred = "U"
         defaults = [
-            (gene + "@*?", "U"),
-            (gene + "@-*?", "U"),
-            (gene + "@*_indel", "U"),
-            (gene + "@-*_indel", "U"),
-            (gene + "@del_0.0", "U"),
+            (gene + "@*?", pred),
+            (gene + "@-*?", pred),
+            (gene + "@*_indel", pred),
+            (gene + "@-*_indel", pred),
+            (gene + "@del_0.0", pred),
         ]
         if reference_genes[gene].codes_protein:
             defaults.append((gene + "@*=", "S"))
