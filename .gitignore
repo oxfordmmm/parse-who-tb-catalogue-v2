@@ -163,3 +163,5 @@ reference.pkl
 reference_genes.pkl
 MUTATIONS.*.gz
 PHENOTYPES.*.gz
+first-parse*.csv
+first-pass*.csv
