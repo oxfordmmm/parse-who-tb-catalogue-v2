@@ -149,156 +149,6 @@ def shorten_aa(aa: str) -> str:
     return mapping[aa.upper()]
 
 
-def parse_to_garc(
-    reference: gumpy.Genome,
-    variant: str,
-    ref_genes: dict[str, gumpy.Gene],
-    row: pd.Series,
-) -> list[str]:
-    """Parse the given variant to GARC
-
-    Args:
-        reference (gumpy.Genome): Reference genome
-        variant (str): Variant to parse
-        ref_genes (dict[str, gumpy.Gene]): Reference gene objects
-
-    Returns:
-        list[str]: Variants in GARC
-    """
-    garc = []
-    # gyrA_LoF
-    # This maps to gene deletion, fs, premature stop or start lost
-    lof = re.compile(
-        r"""
-        ([a-zA-Z_0-9.()]+) # Leading gene name
-        _LoF # Loss of function
-        """,
-        re.VERBOSE,
-    )
-    lof_match = lof.fullmatch(variant)
-    if lof_match is not None:
-        gene = lof_match.groups()[0]
-        # Loss of function maps to a few mutations
-        garc.append(gene + "@del_1.0")  # Feature ablation
-        garc.append(gene + "@*_fs")  # Frameshift
-        if reference.genes[gene]["codes_protein"]:
-            garc.append(gene + "@M1?")  # Start lost
-            garc.append(gene + "@*!")  # Premature stop
-        # print(garc)
-
-    # ***********************************************************************************
-
-    # rrl_n.705A>G | dnaA_c.-46C>G
-    n_snp = re.compile(
-        r"""
-        ([a-zA-Z_0-9.()]+) # Leading gene name
-        _[nc]\. # Nucleotide SNP
-        (\-?[0-9]+) # Position
-        ([ACGT]) # Ref base
-        >
-        ([ACGT]) # Alt base
-        """,
-        re.VERBOSE,
-    )
-    n_snp_match = n_snp.fullmatch(variant)
-    if n_snp_match is not None:
-        gene, pos, ref, alt = n_snp_match.groups()
-        if ref_genes[gene].codes_protein and int(pos) > 0:
-            # Catch coding SNPs which for some reason have been allocated nucleotide SNPs here
-            garc = parse_ref_alt(reference, ref_genes, row)
-        else:
-            garc.append(gene + "@" + ref.lower() + pos + alt.lower())
-
-    # ***********************************************************************************
-
-    # Rv1129c_p.Asn5fs
-    # I'm assuming this implies a frameshift at any base in the codon
-    aa_fs = re.compile(
-        r"""
-        ([a-zA-Z_0-9.()]+) # Leading gene name
-        _p\. # Protein coding
-        ([A-Z][a-z][a-z]) # AA 3 letter name
-        (\-?[0-9]+) # Position
-        fs # Frameshift
-        """,
-        re.VERBOSE,
-    )
-    aa_fs_match = aa_fs.fullmatch(variant)
-    if aa_fs_match is not None:
-        gene, aa, pos = aa_fs_match.groups()
-        aa = shorten_aa(aa)
-        g = ref_genes[gene]
-        r = g.nucleotide_number[g.is_cds][g.codon_number == int(pos)]
-        for i in r:
-            garc.append(gene + "@" + str(i) + "_fs")
-        # print(garc)
-
-    # ***********************************************************************************
-
-    # bacA_p.Met1?
-    aa_non_synon = re.compile(
-        r"""
-        ([a-zA-Z_0-9.()]+) # Leading gene name
-        _p\. # Protein coding
-        ([A-Z][a-z][a-z]) # AA 3 letter name
-        ([0-9]+) # Position
-        \? # Non synon
-        """,
-        re.VERBOSE,
-    )
-    aa_non_synon_match = aa_non_synon.fullmatch(variant)
-    if aa_non_synon_match is not None:
-        gene, aa, pos = aa_non_synon_match.groups()
-        aa = shorten_aa(aa)
-        g = ref_genes[gene]
-        r = g.amino_acid_sequence[g.amino_acid_number == int(pos)][0]
-        garc.append(gene + "@" + r + "1?")
-
-    # ***********************************************************************************
-
-    aa_snp = re.compile(
-        r"""
-        ([a-zA-Z_0-9.()]+) # Leading gene name
-        _p\. # Protein coding
-        ([A-Z][a-z][a-z]) # AA 3 letter name
-        ([0-9]+) # Position
-        ([A-Z][a-z][a-z]) # AA 3 letter name
-        """,
-        re.VERBOSE,
-    )
-    aa_snp_match = aa_snp.fullmatch(variant)
-    if aa_snp_match is not None:
-        gene, ref_aa, pos, alt_aa = aa_snp_match.groups()
-        ref_aa = shorten_aa(ref_aa)
-        alt_aa = shorten_aa(alt_aa)
-        garc.append(gene + "@" + ref_aa + pos + alt_aa)
-
-    # ***********************************************************************************
-
-    early_stop = re.compile(
-        r"""
-        ([a-zA-Z_0-9.()]+) # Leading gene name
-        _p\. # Protein coding
-        ([A-Z][a-z][a-z]) # AA 3 letter name
-        ([0-9]+) # Position
-        \* # Non synon
-        """,
-        re.VERBOSE,
-    )
-    early_stop_match = early_stop.fullmatch(variant)
-    if early_stop_match is not None:
-        gene, aa, pos = early_stop_match.groups()
-        aa = shorten_aa(aa)
-        garc.append(gene + "@" + aa + pos + "!")
-
-    if len(garc) == 0:
-        # If not already parsed, it's an indel
-        #   so avoid nomenclature abiguity by parsing ref/alt
-        garc = parse_ref_alt(reference, ref_genes, row)
-
-    return garc
-
-
 def parse_mutations(scratch: bool = False) -> dict[int, list[str]]:
     """Parse the mutations from the genome coordinates sheet
 
@@ -308,14 +158,14 @@ def parse_mutations(scratch: bool = False) -> dict[int, list[str]]:
         dict[str, list[str]]: Dict mapping row idx -> list[mutations in garc]
     """
     coordinates = pd.read_excel(
-        "WHO-UCN-TB-2023.6-eng.xlsx", sheet_name="Genomic_coordinates"
+        "WHO-UCN-TB-2023.7-eng.xlsx", sheet_name="Genomic_coordinates"
     )
     if scratch:
         reference, ref_genes = build_reference("NC_000962.3.gbk")
         mutations = {}
         rows = [(idx, row) for idx, row in coordinates.iterrows()]
         for idx, row in tqdm(rows):
-            m = parse_to_garc(reference, row["variant"], ref_genes, row)
+            m = parse_ref_alt(reference, ref_genes, row)
             mutations[idx] = m
         pickle.dump(mutations, open("garc_formatted_coordinates.pkl", "wb"))
     else:
@@ -387,6 +237,7 @@ def convert_drug(drug: str) -> str:
     }
     return mapping[drug]
 
+
 def check(a, b):
     if np.isnan(a) or np.isnan(b):
         return
@@ -442,7 +293,7 @@ def get_evidences(master_file: pd.DataFrame) -> tuple[dict, dict]:
             ),
             "FINAL CONFIDENCE GRADING": safe_solo(row["FINAL CONFIDENCE GRADING"]),
             "INITIAL CONFIDENCE GRADING": safe_solo(row["INITIAL CONFIDENCE GRADING"]),
-            "WHO HGVS": row["variant"]
+            "WHO HGVS": row["variant"],
         }
     return evidences, others
 
@@ -696,6 +547,22 @@ def catalogue_to_garc(
     return skipped
 
 
+def fetch_group_3_to_keep() -> set[tuple[str, str]]:
+    """Parse the group 3 rules to keep (hand picked by Tim Peto)
+
+    Note that these have 0 impact on prediction as they're all U's,
+    but improve evidence when these rules are hit
+
+    Returns:
+        set[tuple[str, str]]: Set of (WHO_HGVS, drug) tuples to keep
+    """
+    group_3 = pd.read_csv("group-3-to-keep.csv")
+    to_keep = set()
+    for _, row in group_3.iterrows():
+        to_keep.add((row["variant"], convert_drug(row["drug"])))
+    return to_keep
+
+
 def filter(reference_genes: dict[str, gumpy.Gene]):
     """Remove superfluous rows which are covered by default or broad rules
     Almost exactly the same proceedure as with v1. Also adds default rules
@@ -723,6 +590,7 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
                     resistanceGenes.add((m.split("@")[0], drug))
             else:
                 resistanceGenes.add((mutation.split("@")[0], drug))
+    to_keep = fetch_group_3_to_keep()
     fixed = {col: [] for col in catalogue}
     for i, row in catalogue.iterrows():
         toDelete = False
@@ -741,46 +609,56 @@ def filter(reference_genes: dict[str, gumpy.Gene]):
                 toDelete = False
                 for mut in mutation.split("&"):
                     if (mut.split("@")[0], row["DRUG"]) not in resistanceGenes:
-                        print(f"Removing {mutation} --> {row['DRUG']} : {(mut.split('@')[0], row['DRUG'])} as it's not a resistance gene for {mut}")
+                        print(
+                            f"Removing {mutation} --> {row['DRUG']} : {(mut.split('@')[0], row['DRUG'])} as it's not a resistance gene for {mut}"
+                        )
                         toDelete = True
-        if "^" not in mutation and (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes:
+        if (
+            "^" not in mutation
+            and (mutation.split("@")[0], row["DRUG"]) not in resistanceGenes
+        ):
             toDelete = True
             print(
                 f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it is not a resistance gene"
             )
 
         elif prediction == "U":
-            indel = re.compile(
-                r"""
-                            ([a-zA-Z_0-9]+@) #Leading gene name
-                            (
-                                (-?[0-9]+_((ins)|(del))_[acgotxz]*) #indel
-                            )
-                            """,
-                re.VERBOSE,
-            )
-            if indel.fullmatch(mutation):
-                # Matched an indel generic so delete
-                toDelete = True
-                print(
-                    f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *_indel-->U"
-                )
-
-            nonsynon = re.compile(
-                r"""
+            if (
+                (json.loads(row["EVIDENCE"]).get("WHO HGVS"), row["DRUG"])
+                not in to_keep
+                or "dup" in json.loads(row["EVIDENCE"]).get("WHO HGVS")
+                or "ext" in json.loads(row["EVIDENCE"]).get("WHO HGVS")
+            ):
+                indel = re.compile(
+                    r"""
                                 ([a-zA-Z_0-9]+@) #Leading gene name
-                                (([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])-?[0-9]+([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])) #SNP
+                                (
+                                    (-?[0-9]+_((ins)|(del))_[acgotxz]*) #indel
+                                )
                                 """,
-                re.VERBOSE,
-            )
-            if nonsynon.fullmatch(mutation):
-                _, _, base1, base2 = nonsynon.fullmatch(mutation).groups()
-                if base1 != base2:
-                    # This matches the gene@*? or gene@-*? so delete
+                    re.VERBOSE,
+                )
+                if indel.fullmatch(mutation):
+                    # Matched an indel generic so delete
                     toDelete = True
                     print(
-                        f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *?-->U or -*?-->U"
+                        f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *_indel-->U"
                     )
+                nonsynon = re.compile(
+                    r"""
+                                    ([a-zA-Z_0-9]+@) #Leading gene name
+                                    (([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])-?[0-9]+([!ACDEFGHIKLMNOPQRSTVWXYZacgotxz])) #SNP
+                                    """,
+                    re.VERBOSE,
+                )
+                if nonsynon.fullmatch(mutation):
+                    _, _, base1, base2 = nonsynon.fullmatch(mutation).groups()
+                    if base1 != base2:
+                        # This matches the gene@*? or gene@-*? so delete
+                        toDelete = True
+                        print(
+                            f"Removing {row['MUTATION']}:{row['DRUG']}:{row['PREDICTION']} as it matches *?-->U or -*?-->U"
+                        )
             if mutation.split("@")[0] == "mmpL5":
                 toDelete = True
 
@@ -890,7 +768,6 @@ def filter_evidence(r_mutations: list[dict]) -> dict:
             # most_significant_ev = percent
             most_significant_mut = (r_mut, evidence)
             most_significant_total = solo_r + solo_sr
-        
 
     if most_significant_mut is None:
         # This only happens with expert rules not otherwise in catalogue
@@ -907,66 +784,79 @@ def add_nulls_and_minors():
     original_df = pd.read_csv(path)
     rules = original.catalogue.rules
 
-    snps = rules[rules['MUTATION_TYPE'] == "SNP"]
-    r_snps = snps[snps['PREDICTION'] == "R"]
-    r_snps = r_snps[r_snps['POSITION'] != "*"]
+    snps = rules[rules["MUTATION_TYPE"] == "SNP"]
+    r_snps = snps[snps["PREDICTION"] == "R"]
+    r_snps = r_snps[r_snps["POSITION"] != "*"]
     f_rules = defaultdict(list)
     minor_rules = defaultdict(list)
 
     for _, row in r_snps.iterrows():
-        if str(row['MUTATION'][-1]).islower():
+        if str(row["MUTATION"][-1]).islower():
             # Nucleotide mutation
-            null_mutation = row['MUTATION'][:-1] + "x"
+            null_mutation = row["MUTATION"][:-1] + "x"
         else:
-            null_mutation = row['MUTATION'][:-1] + "X"
-        
+            null_mutation = row["MUTATION"][:-1] + "X"
+
         if row["EVIDENCE"].get("FINAL CONFIDENCE GRADING", "") == "1) Assoc w R":
-            f_rules[(row['GENE'], null_mutation, row['DRUG'])].append((row['GENE']+"@"+row['MUTATION'], row['EVIDENCE']))
-            minor_rules[(row['GENE'], row["MUTATION"]+":3", row['DRUG'])].append((row['GENE']+"@"+row['MUTATION'], row['EVIDENCE']))
-        if row["EVIDENCE"].get("FINAL CONFIDENCE GRADING", "") == "2) Assoc w R - Interim":
-            minor_rules[(row['GENE'], row["MUTATION"]+":3", row['DRUG'])].append((row['GENE']+"@"+row['MUTATION'], row['EVIDENCE']))
-    
+            f_rules[(row["GENE"], null_mutation, row["DRUG"])].append(
+                (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
+            )
+            minor_rules[(row["GENE"], row["MUTATION"] + ":3", row["DRUG"])].append(
+                (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
+            )
+        if (
+            row["EVIDENCE"].get("FINAL CONFIDENCE GRADING", "")
+            == "2) Assoc w R - Interim"
+        ):
+            minor_rules[(row["GENE"], row["MUTATION"] + ":3", row["DRUG"])].append(
+                (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
+            )
+
     f_df_dict = defaultdict(list)
 
     print(f"Adding {len(f_rules.keys())} null rules")
-    for g, m ,d in f_rules.keys():
-        f_df_dict['GENBANK_REFERENCE'].append("NC_000962.3")
-        f_df_dict['CATALOGUE_NAME'].append("WHO-UCN-GTB-PCI-2023.5")
-        f_df_dict['CATALOGUE_VERSION'].append(2.0)
-        f_df_dict['CATALOGUE_GRAMMAR'].append("GARC1")
-        f_df_dict['PREDICTION_VALUES'].append("RFUS")
-        f_df_dict['DRUG'].append(d)
-        f_df_dict['MUTATION'].append(g+"@"+m)
-        f_df_dict['PREDICTION'].append("F")
-        f_df_dict['SOURCE'].append({})
+    for g, m, d in f_rules.keys():
+        f_df_dict["GENBANK_REFERENCE"].append("NC_000962.3")
+        f_df_dict["CATALOGUE_NAME"].append("WHO-UCN-GTB-PCI-2023.5")
+        f_df_dict["CATALOGUE_VERSION"].append(2.0)
+        f_df_dict["CATALOGUE_GRAMMAR"].append("GARC1")
+        f_df_dict["PREDICTION_VALUES"].append("RFUS")
+        f_df_dict["DRUG"].append(d)
+        f_df_dict["MUTATION"].append(g + "@" + m)
+        f_df_dict["PREDICTION"].append("F")
+        f_df_dict["SOURCE"].append({})
         significant_mut, significant_ev = filter_evidence(f_rules[(g, m, d)])
         significant_mut = significant_mut.split("@")[1]
-        f_df_dict['EVIDENCE'].append(json.dumps({"Resistant prediction": significant_mut, ** significant_ev}))
-        f_df_dict['OTHER'].append({})
+        f_df_dict["EVIDENCE"].append(
+            json.dumps({"Resistant prediction": significant_mut, **significant_ev})
+        )
+        f_df_dict["OTHER"].append({})
 
     print(f"Adding {len(minor_rules.keys())} minor rules")
-    for g, m ,d in minor_rules.keys():
-        f_df_dict['GENBANK_REFERENCE'].append("NC_000962.3")
-        f_df_dict['CATALOGUE_NAME'].append("WHO-UCN-GTB-PCI-2023.5")
-        f_df_dict['CATALOGUE_VERSION'].append(2.0)
-        f_df_dict['CATALOGUE_GRAMMAR'].append("GARC1")
-        f_df_dict['PREDICTION_VALUES'].append("RFUS")
-        f_df_dict['DRUG'].append(d)
-        f_df_dict['MUTATION'].append(g+"@"+m)
-        f_df_dict['PREDICTION'].append("R")
-        f_df_dict['SOURCE'].append({})
+    for g, m, d in minor_rules.keys():
+        f_df_dict["GENBANK_REFERENCE"].append("NC_000962.3")
+        f_df_dict["CATALOGUE_NAME"].append("WHO-UCN-GTB-PCI-2023.5")
+        f_df_dict["CATALOGUE_VERSION"].append(2.0)
+        f_df_dict["CATALOGUE_GRAMMAR"].append("GARC1")
+        f_df_dict["PREDICTION_VALUES"].append("RFUS")
+        f_df_dict["DRUG"].append(d)
+        f_df_dict["MUTATION"].append(g + "@" + m)
+        f_df_dict["PREDICTION"].append("R")
+        f_df_dict["SOURCE"].append({})
         significant_mut, significant_ev = filter_evidence(minor_rules[(g, m, d)])
         significant_mut = significant_mut.split("@")[1]
-        f_df_dict['EVIDENCE'].append(json.dumps(significant_ev))
-        f_df_dict['OTHER'].append({})
+        f_df_dict["EVIDENCE"].append(json.dumps(significant_ev))
+        f_df_dict["OTHER"].append({})
 
     f_df = pd.DataFrame.from_dict(f_df_dict)
 
     new_df = pd.concat([original_df, f_df])
-    new_df['CATALOGUE_VERSION'] = 2.0
-    new_df['PREDICTION_VALUES'] = "RFUS"
+    new_df["CATALOGUE_VERSION"] = 2.0
+    new_df["PREDICTION_VALUES"] = "RFUS"
     new_df.reset_index(drop=True, inplace=True)
-    new_df.to_csv("NC_000962.3_WHO-UCN-TB-2023.5_v2.0_GARC1_RFUS-updated.csv", index=False)
+    new_df.to_csv(
+        "NC_000962.3_WHO-UCN-TB-2023.5_v2.0_GARC1_RFUS.csv", index=False
+    )
 
 
 def main():
@@ -976,7 +866,7 @@ def main():
         action="store_true",
         default=False,
         required=False,
-        help="Convert the genome coordinates sheet to GARC. Takes ~7h.",
+        help="Convert the genome coordinates sheet to GARC. Takes ~55h.",
     )
     parser.add_argument(
         "--parse",
@@ -993,17 +883,15 @@ def main():
         help="Filter out rows covered by general rules.",
     )
     options = parser.parse_args()
-    if (
-        not options.to_garc
-        and not options.parse
-        and not options.filter
-    ):
+    if not options.to_garc and not options.parse and not options.filter:
         print("No args given!")
         return
-    
+
     if options.to_garc:
         # Double check that the user knows that a) this is destructive and b) takes a long time
-        check = input("The to-garc operation will take ~7h and overwrite the existing garc_formatted_coordinates.pkl, continue? [y/n]")
+        check = input(
+            "The to-garc operation will take ~55h and overwrite the existing garc_formatted_coordinates.pkl, continue? [y/n]"
+        )
         if check == "y":
             parse_mutations(scratch=True)
         else:
@@ -1018,20 +906,21 @@ def main():
 
     if options.parse:
         master_file = pd.read_excel(
-            "WHO-UCN-TB-2023.6-eng.xlsx",
+            "WHO-UCN-TB-2023.7-eng.xlsx",
             sheet_name="Catalogue_master_file",
             skiprows=[0, 1],
         )
         coordinates = pd.read_excel(
-            "WHO-UCN-TB-2023.6-eng.xlsx", sheet_name="Genomic_coordinates"
+            "WHO-UCN-TB-2023.7-eng.xlsx", sheet_name="Genomic_coordinates"
         )
 
         mutations = pickle.load(open("garc_formatted_coordinates.pkl", "rb"))
         rows = [(idx, row) for idx, row in coordinates.iterrows()]
         catalogue_to_garc(rows, master_file, mutations, reference, ref_genes)
-    
+
     if options.filter:
         filter(ref_genes)
+
 
 if __name__ == "__main__":
     main()
