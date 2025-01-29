@@ -1,8 +1,8 @@
 # parse-who-tb-catalogue-v2
 Parse the WHO TB AMR catalogue into GARC for use with gnomonicus
 
-## Initial version
-A possibly usable first draft is available in `NC_000962.3_WHO-UCN-TB-2023.5_v2.0_GARC1_RFUS.csv`
+## Output
+A parsed, production ready version is available in `NC_000962.3_WHO-UCN-TB-2023.5_v2.0_GARC1_RFUS.csv`
 
 ## Install
 Optional virtual environment
@@ -16,11 +16,17 @@ pip install -r requirements.txt
 ```
 
 ## Running
-This is still a WIP, so code is messy and there's a lot of junk in this repo. 
-1. Parse every row of the `coordinates` sheet with gumpy. This takes ~3 days. Code is within `parse.py` for this, but not currently available as a CLI option. The result is included in this repo for ease of use. Latest: `garc_formatted_8_feb_2024.pkl`
-2. Parse the master file and build a CSV of rows which don't exist in the coordinates sheet: `python parse.py --t`. This produces `expert-rules.csv`
-3. Parse a very verbose and literal translation of the master sheet: `python parse.py --parse`. This produces `first-pass.csv`
-4. Filter out unhelpful rows and add default rules: `python parse.py --filter`. This produces `first-pass-filtered.csv` 
+To parse from scratch (not recommended due to processing time):
+```bash
+python parse-whov2.py --to-garc --parse --filter
+```
+
+Because each of the itermediary files is included in the repo, any combination of these options will work (although there is an order to which proccesses which downstream files). e.g `--parse --filter` will produce a re-parsed catalogue and re-filtered interpretation, but `--to-garc --filter` will re-parse coordinates and re-filter, but won't re-parse the catalogue (so re-parsed coordinates won't be used).
+
+Options explained:
+* `--to-garc` Parses all rows of the coordinates sheet of the Excel spreadsheet, writing them to `garc_formatted_coordinates.pkl`. This operation takes >55h, so is not recommeded (other than for reproducability) as the output file is included in this repo.
+* `--parse` Parses the master sheet of the Excel spreadsheet and the `garc_formatted_coordinates.pkl`. This produces a maximal set of specific rows from the catalogue (`first-pass.csv`). This cannot reliably be used for a few reasons, not excluding the lack of default prediction rules. It's also >52,000 rows so would be unecessarily large.
+* `--filter` Filters the specific rows from `first-pass.csv` to remove those covered by default predictions rules (while ensuring the default rules exist). Also ensures that only resistance genes are included, adds minor rules for all group 1/2 specific SNPs, and null rules for all group 1 specific SNPs. There are also a specific set of group 3 (`U`) rules which are covered by default prediction rules, but are added back to increase available evidence for these mutations.
 
 
 ## General strategy
@@ -79,8 +85,5 @@ The catalouge has several (618) ref/alt pairs which do not lie within the gene r
 ##### Solution
 Do nothing (for now). Including such rows would require a significant rethink of how `gumpy` assigns promoter regions.
 
-
-## Known issues
-* No minor population rules yet
 
 
