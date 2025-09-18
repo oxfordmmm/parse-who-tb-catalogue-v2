@@ -786,10 +786,13 @@ def add_nulls_and_minors():
 
     snps = rules[rules["MUTATION_TYPE"] == "SNP"]
     r_snps = snps[snps["PREDICTION"] == "R"]
-    r_snps = r_snps[r_snps["POSITION"] != "*"]
+    specific_r_snps = r_snps[r_snps["POSITION"] != "*"]
+    indels = rules[rules["MUTATION_TYPE"] == "INDEL"]
+    r_indels = indels[indels["PREDICTION"] == "R"]
     f_rules = defaultdict(list)
     minor_rules = defaultdict(list)
 
+    # Add minor rules for all R SNPs (including wildcards)
     for _, row in r_snps.iterrows():
         if str(row["MUTATION"][-1]).islower():
             # Nucleotide mutation
@@ -798,9 +801,7 @@ def add_nulls_and_minors():
             null_mutation = row["MUTATION"][:-1] + "X"
 
         if row["EVIDENCE"].get("FINAL CONFIDENCE GRADING", "") == "1) Assoc w R":
-            f_rules[(row["GENE"], null_mutation, row["DRUG"])].append(
-                (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
-            )
+            
             minor_rules[(row["GENE"], row["MUTATION"] + ":3", row["DRUG"])].append(
                 (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
             )
@@ -809,6 +810,26 @@ def add_nulls_and_minors():
             == "2) Assoc w R - Interim"
         ):
             minor_rules[(row["GENE"], row["MUTATION"] + ":3", row["DRUG"])].append(
+                (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
+            )
+
+    # Add minor rules for all R indels (including wildcards)
+    for _, row in r_indels.iterrows():
+        minor_rules[(row["GENE"], row["MUTATION"] + ":3", row["DRUG"])].append(
+            (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
+        )
+
+    # Only add null rules for specific R SNPs
+    for _, row in specific_r_snps.iterrows():
+        if str(row["MUTATION"][-1]).islower():
+            # Nucleotide mutation
+            null_mutation = row["MUTATION"][:-1] + "x"
+        else:
+            null_mutation = row["MUTATION"][:-1] + "X"
+
+        if row["EVIDENCE"].get("FINAL CONFIDENCE GRADING", "") == "1) Assoc w R":
+            # Only F specifics
+            f_rules[(row["GENE"], null_mutation, row["DRUG"])].append(
                 (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
             )
 
@@ -855,7 +876,7 @@ def add_nulls_and_minors():
     new_df["PREDICTION_VALUES"] = "RFUS"
     new_df.reset_index(drop=True, inplace=True)
     new_df.to_csv(
-        "NC_000962.3_WHO-UCN-TB-2023.5_v2.0_GARC1_RFUS.csv", index=False
+        "NC_000962.3_WHO-UCN-TB-2023.5_v2.1_GARC1_RFUS.csv", index=False
     )
 
 
