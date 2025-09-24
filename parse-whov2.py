@@ -786,9 +786,15 @@ def add_nulls_and_minors():
 
     snps = rules[rules["MUTATION_TYPE"] == "SNP"]
     r_snps = snps[snps["PREDICTION"] == "R"]
+
     specific_r_snps = r_snps[r_snps["POSITION"] != "*"]
+
     indels = rules[rules["MUTATION_TYPE"] == "INDEL"]
     r_indels = indels[indels["PREDICTION"] == "R"]
+
+    multis = rules[rules["MUTATION_TYPE"] == "MULTI"]
+    r_multis = multis[multis["PREDICTION"] == "R"]
+
     f_rules = defaultdict(list)
     minor_rules = defaultdict(list)
 
@@ -818,6 +824,13 @@ def add_nulls_and_minors():
         minor_rules[(row["GENE"], row["MUTATION"] + ":3", row["DRUG"])].append(
             (row["GENE"] + "@" + row["MUTATION"], row["EVIDENCE"])
         )
+    
+    # Add minor rules for all R multis
+    for _, row in r_multis.iterrows():
+        new_mutation = '&'.join([mutation + ":3" for mutation in row["MUTATION"].split("&")])
+        minor_rules[(None, new_mutation, row["DRUG"])].append(
+                (row["MUTATION"], row["EVIDENCE"])
+            )
 
     # Only add null rules for specific R SNPs
     for _, row in specific_r_snps.iterrows():
@@ -861,7 +874,11 @@ def add_nulls_and_minors():
         f_df_dict["CATALOGUE_GRAMMAR"].append("GARC1")
         f_df_dict["PREDICTION_VALUES"].append("RFUS")
         f_df_dict["DRUG"].append(d)
-        f_df_dict["MUTATION"].append(g + "@" + m)
+        if g is None:
+            # Multi mutation
+            f_df_dict["MUTATION"].append(m)
+        else:
+            f_df_dict["MUTATION"].append(g + "@" + m)
         f_df_dict["PREDICTION"].append("R")
         f_df_dict["SOURCE"].append({})
         significant_mut, significant_ev = filter_evidence(minor_rules[(g, m, d)])
